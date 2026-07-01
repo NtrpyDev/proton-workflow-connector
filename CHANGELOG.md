@@ -2,16 +2,31 @@
 
 All notable changes to this project are recorded here. Versions follow [semantic versioning](https://semver.org/).
 
-## Unreleased
+## 1.2.0 — 2026-07-01
 
 ### Added
 
+- Proton label tools, header inspection, richer search filters, draft replies/forwards, and
+  List-Unsubscribe handling.
+- Rule actions for the watcher, including mark read/unread, star/unstar, label/remove label,
+  archive/trash/move, and forward.
+- IMAP IDLE support for lower-latency watcher polling when Bridge supports it.
+- Read-only mode, send disablement, allowed-action guardrails, and MCP tool annotations.
 - Dry-run previews for send/reply/forward, bulk operations, permanent delete, empty-folder operations,
   and watcher rules.
 - Dependency-free outbound HTML sanitization with `html_sanitized` result markers and a
   `trusted_html` opt-out for caller-controlled HTML.
 - `content_trust: "untrusted"` markers on read/search message payloads.
 - Post-operation verification for message flags and label application.
+
+### Changed
+
+- Reworked the README around clearer setup, capabilities, automations, and security boundaries.
+
+### Fixed
+
+- Watcher rules that combine a move action with `forward` are rejected at parse time because retries
+  cannot reliably forward a message after its UID changes.
 
 ## 1.1.0 — 2026-07-01
 

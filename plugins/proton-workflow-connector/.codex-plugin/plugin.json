@@ -1,6 +1,6 @@
 {
   "name": "proton-workflow-connector",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Unofficial self-hosted MCP connector for Proton Mail Bridge and SimpleLogin.",
   "author": {
     "name": "NtrpyDev",
