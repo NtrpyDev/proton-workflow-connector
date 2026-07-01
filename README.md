@@ -227,4 +227,4 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution and privacy requirements
 
 MIT. See [LICENSE](LICENSE).
 
-<!-- mcp-name: io.github.ntrpydev/proton-workflow-connector -->
+<!-- mcp-name: io.github.NtrpyDev/proton-workflow-connector -->
