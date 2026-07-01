@@ -188,6 +188,23 @@ def test_poll_aliases_limit_truncates_and_flags_more():
     assert result["more"] is True
 
 
+def test_poll_aliases_does_not_stop_on_low_id_on_first_page():
+    # Regression: SimpleLogin floats pinned/recent aliases to the top, so a low id can appear on
+    # page 0 ahead of newer aliases on later pages. Pagination must not stop at that low id.
+    requester = _paged_aliases(
+        {
+            0: [{"id": 5, "email": "pinned@x.com"}, {"id": 100, "email": "new@x.com"}],
+            1: [{"id": 99, "email": "b@x.com"}, {"id": 98, "email": "a@x.com"}],
+        }
+    )
+    client = SimpleLoginClient(settings(), requester=requester)
+
+    result = client.poll_aliases(last_id=97)
+
+    assert [alias["id"] for alias in result["aliases"]] == [98, 99, 100]  # none missed on page 1
+    assert result["cursor_id"] == 100
+
+
 def test_poll_aliases_pages_back_to_find_all_new():
     requester = _paged_aliases(
         {

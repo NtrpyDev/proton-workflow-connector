@@ -72,27 +72,29 @@ class SimpleLoginClient:
         flooded with the full alias list. Alias ids are monotonic, so a newly created alias always
         has an id greater than the cursor.
 
-        SimpleLogin returns aliases newest-first, so page 0 already contains the newest alias. When a
-        cursor is set we page back until a page dips to or below the cursor (or ``max_pages`` is hit),
-        which keeps a burst of new aliases from being missed. ``query`` matches a substring of the
+        SimpleLogin does **not** sort the alias list purely by id — pinned aliases and recent
+        activity float to the top, so a low id can appear on page 0 ahead of much newer aliases.
+        We therefore cannot stop paging as soon as a page dips below the cursor (that would miss new
+        aliases sitting on later pages). Instead we read pages until an empty page or the ``max_pages``
+        safety cap, then filter by id. Newly created aliases have the highest ids and land on the
+        first pages, so the cap never hides recent activity. ``query`` matches a substring of the
         alias email. If more new aliases exist than ``limit``, the extra ones roll to the next poll.
         """
         if limit < 0:
             raise ValueError("limit must be zero or greater")
         collected: dict[int, dict[str, Any]] = {}
-        page_items = _alias_page(self.list_aliases(page_id=0))
-        for item in page_items:
-            collected[int(item["id"])] = item
+        truncated = False
+        for page in range(max_pages):
+            page_items = _alias_page(self.list_aliases(page_id=page))
+            if not page_items:
+                break
+            for item in page_items:
+                collected[int(item["id"])] = item
+        else:
+            truncated = True  # hit the page cap without reaching the end of the list
         head_id = max(collected, default=last_id)
         if last_id == 0:
             return {"aliases": [], "cursor_id": head_id, "baseline": True, "more": False}
-
-        page = 1
-        while page < max_pages and page_items and min(int(item["id"]) for item in page_items) > last_id:
-            page_items = _alias_page(self.list_aliases(page_id=page))
-            for item in page_items:
-                collected[int(item["id"])] = item
-            page += 1
 
         newer = (item for item in collected.values() if int(item["id"]) > last_id)
         fresh = sorted(newer, key=lambda item: int(item["id"]))
@@ -100,9 +102,8 @@ class SimpleLoginClient:
             needle = query.casefold()
             fresh = [item for item in fresh if needle in str(item.get("email", "")).casefold()]
         delivered = fresh[:limit] if limit else fresh
-        more = len(fresh) > len(delivered)
-        head_seen = max(collected, default=last_id)
-        cursor_id = int(delivered[-1]["id"]) if more and delivered else head_seen
+        more = len(fresh) > len(delivered) or truncated
+        cursor_id = int(delivered[-1]["id"]) if more and delivered else head_id
         return {"aliases": delivered, "cursor_id": cursor_id, "baseline": False, "more": more}
 
     def create_random_alias(
