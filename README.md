@@ -5,7 +5,7 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Proton Workflow Connector (PWC) is a self-hosted Model Context Protocol (MCP) connector for reading, sending, organizing, and automating Proton Mail through Proton Mail Bridge.
+Proton Workflow Connector (PWC) is a self-hosted MCP connector for reading, sending, organizing, and automating Proton Mail through Proton Mail Bridge.
 It works with any MCP client or local agent runtime that can launch a stdio server or call a Streamable HTTP MCP endpoint.
 SimpleLogin support is optional.
 
