@@ -10,15 +10,33 @@ import pytest
 from proton_mail_mcp.config import Settings
 from proton_mail_mcp.imap_client import BridgeMailClient
 from proton_mail_mcp.watch import (
+    CommandDeliveryError,
     CursorStore,
     WatchRule,
     WebhookDeliveryError,
+    build_alias_event,
     build_event,
     deliver_webhook,
+    load_rules_file,
+    make_command_sink,
+    make_file_sink,
     poll_rule,
+    resolve_sink,
     run_watch,
     sign_payload,
 )
+
+
+class FakeSimpleLogin:
+    """Minimal stand-in for SimpleLoginClient.poll_aliases in watcher tests."""
+
+    def __init__(self, outcome: dict) -> None:
+        self.outcome = outcome
+        self.calls: list[dict] = []
+
+    def poll_aliases(self, *, last_id: int = 0, query=None, limit: int = 50, max_pages: int = 20) -> dict:
+        self.calls.append({"last_id": last_id, "query": query, "limit": limit})
+        return self.outcome
 
 
 def settings(**overrides) -> Settings:
@@ -297,3 +315,207 @@ def test_run_watch_once_delivers_new_messages_to_sink(tmp_path):
     assert count == 2
     assert [event["message"]["uid"] for event in collected] == ["18", "19"]
     assert store.get("INBOX") == (19, 7)
+
+
+# --- Area 1: SimpleLogin alias event source -------------------------------------------------
+
+
+def test_build_alias_event_shape():
+    event = build_alias_event("aliases", {"id": 7, "email": "a@x.com", "enabled": True, "secret": "x"})
+
+    assert event["type"] == "alias.created"
+    assert event["rule"] == "aliases"
+    assert event["alias"] == {"id": 7, "email": "a@x.com", "enabled": True}  # only whitelisted fields
+    assert "timestamp" in event
+
+
+def test_poll_rule_dispatches_to_simplelogin_source(tmp_path):
+    store = CursorStore.load(tmp_path / "state.json")
+    store.set("aliases", cursor_uid=6, uid_validity=None)
+    fake = FakeSimpleLogin({"aliases": [{"id": 7, "email": "a@x.com"}], "cursor_id": 7, "baseline": False})
+    rule = WatchRule(name="aliases", source="simplelogin_alias", query="a@")
+
+    outcome = poll_rule(None, rule, store, simplelogin=fake)
+
+    assert fake.calls == [{"last_id": 6, "query": "a@", "limit": 50}]
+    assert [event["type"] for event in outcome["events"]] == ["alias.created"]
+    assert outcome["cursors"] == [7]
+    assert outcome["commit_cursor"] == 7
+    assert outcome["prior_cursor"] == 6
+
+
+def test_run_watch_delivers_alias_events(tmp_path):
+    store = CursorStore.load(tmp_path / "state.json")
+    store.set("aliases", cursor_uid=6, uid_validity=None)
+    fake = FakeSimpleLogin(
+        {"aliases": [{"id": 7, "email": "a@x.com"}, {"id": 8, "email": "b@x.com"}], "cursor_id": 8, "baseline": False}
+    )
+    collected: list[dict] = []
+
+    count = run_watch(
+        settings(simplelogin_api_key="sl-key"),
+        rules=[WatchRule(name="aliases", source="simplelogin_alias")],
+        simplelogin=fake,
+        store=store,
+        once=True,
+        sink=collected.append,
+    )
+
+    assert count == 2
+    assert [event["alias"]["id"] for event in collected] == [7, 8]
+    assert store.get("aliases") == (8, None)
+
+
+# --- Area 2: JSON rules file ----------------------------------------------------------------
+
+
+def test_load_rules_file_parses_named_triggers(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text(
+        json.dumps(
+            {
+                "rules": [
+                    {"name": "invoices", "folder": "INBOX", "from": "billing@x", "unread": True, "webhook_url": "https://a"},
+                    {"name": "new-aliases", "source": "simplelogin_alias", "query": "shop"},
+                ]
+            }
+        )
+    )
+
+    rules = load_rules_file(path)
+
+    assert [rule.name for rule in rules] == ["invoices", "new-aliases"]
+    assert rules[0].source == "mail"
+    assert rules[0].from_ == "billing@x"
+    assert rules[0].unread is True
+    assert rules[0].webhook_url == "https://a"
+    assert rules[1].source == "simplelogin_alias"
+    assert rules[1].query == "shop"
+
+
+def test_load_rules_file_rejects_unknown_source(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text(json.dumps([{"name": "x", "source": "telegram"}]))
+    with pytest.raises(ValueError, match="unknown source"):
+        load_rules_file(path)
+
+
+def test_load_rules_file_rejects_duplicate_names(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text(json.dumps([{"name": "dup"}, {"name": "dup"}]))
+    with pytest.raises(ValueError, match="Duplicate rule names"):
+        load_rules_file(path)
+
+
+# --- Area 3: Dead-letter / forward progress -------------------------------------------------
+
+
+def test_dead_letter_advances_after_max_attempts(tmp_path):
+    FakeIMAP.search_uids = b"18"
+    state_path = tmp_path / "state.json"
+    dead_letter = tmp_path / "dead-letter.jsonl"
+    st = settings(
+        watch_webhook_url="https://hook.example/ingest",
+        watch_state_path=str(state_path),
+        watch_dead_letter_path=str(dead_letter),
+        watch_dead_letter_max_attempts=2,
+    )
+    rules = [WatchRule(name="INBOX", folder="INBOX")]
+
+    def always_fail(event: dict) -> None:
+        raise RuntimeError("receiver is down")
+
+    # Seed the cursor at 17 so UID 18 is the single new event.
+    seed = CursorStore.load(state_path)
+    seed.set("INBOX", cursor_uid=17, uid_validity=7)
+    seed.save()
+
+    # Cycle 1: first failure holds the cursor and writes no dead-letter yet.
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+    store = CursorStore.load(state_path)
+    run_watch(st, rules=rules, client=client, store=store, once=True, sink=always_fail)
+    assert store.get("INBOX") == (17, 7)
+    assert not dead_letter.exists()
+
+    # Cycle 2: second failing cycle on the same event dead-letters it and advances past it.
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+    store = CursorStore.load(state_path)
+    run_watch(st, rules=rules, client=client, store=store, once=True, sink=always_fail)
+    assert store.get("INBOX") == (18, 7)
+
+    lines = dead_letter.read_text(encoding="utf-8").strip().splitlines()
+    assert len(lines) == 1
+    record = json.loads(lines[0])
+    assert record["rule"] == "INBOX"
+    assert record["event"]["message"]["uid"] == "18"
+    assert record["attempts"] == 2
+
+
+# --- Area 4: Delivery targets (file + command sinks) ----------------------------------------
+
+
+def test_file_sink_appends_jsonl(tmp_path):
+    path = tmp_path / "events.jsonl"
+    sink = make_file_sink(path)
+
+    sink(build_event("inbox", "INBOX", {"uid": "18"}))
+    sink(build_event("inbox", "INBOX", {"uid": "19"}))
+
+    lines = path.read_text(encoding="utf-8").strip().splitlines()
+    assert [json.loads(line)["message"]["uid"] for line in lines] == ["18", "19"]
+
+
+def test_run_watch_file_sink_end_to_end(tmp_path):
+    FakeIMAP.search_uids = b"18 19"
+    out = tmp_path / "events.jsonl"
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+    store = CursorStore.load(tmp_path / "state.json")
+    store.set("INBOX", cursor_uid=17, uid_validity=7)
+
+    count = run_watch(
+        settings(watch_sink="file", watch_file_path=str(out)),
+        rules=[WatchRule(name="INBOX", folder="INBOX")],
+        client=client,
+        store=store,
+        once=True,
+    )
+
+    assert count == 2
+    assert len(out.read_text(encoding="utf-8").strip().splitlines()) == 2
+    assert store.get("INBOX") == (19, 7)
+
+
+def test_command_sink_pipes_event_and_raises_on_failure():
+    calls: list[tuple] = []
+
+    def failing_runner(argv, body, timeout):
+        calls.append((list(argv), body))
+        return 1, "boom"
+
+    sink = make_command_sink("deliver --flag", runner=failing_runner)
+    with pytest.raises(CommandDeliveryError):
+        sink(build_event("inbox", "INBOX", {"uid": "18"}))
+
+    assert calls[0][0] == ["deliver", "--flag"]
+    assert json.loads(calls[0][1])["message"]["uid"] == "18"
+
+
+def test_command_sink_success_does_not_raise():
+    sink = make_command_sink("cat", runner=lambda argv, body, timeout: (0, ""))
+    sink(build_event("inbox", "INBOX", {"uid": "18"}))  # must not raise
+
+
+def test_resolve_sink_per_rule_webhook_bypasses_default_target(tmp_path):
+    # A per-rule webhook_url must win even when the global sink is 'file' with no file path set.
+    st = settings(watch_sink="file")
+    rule = WatchRule(name="a", webhook_url="https://per-rule/ingest")
+
+    sink = resolve_sink(st, rule)
+
+    assert callable(sink)
+
+
+def test_resolve_sink_errors_when_webhook_target_missing():
+    st = settings(watch_sink="webhook")
+    with pytest.raises(RuntimeError, match="No webhook URL"):
+        resolve_sink(st, WatchRule(name="a"))

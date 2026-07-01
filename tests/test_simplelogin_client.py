@@ -129,3 +129,71 @@ def test_simplelogin_rejects_invalid_updates_and_random_mode():
         client.update_alias(1)
     with pytest.raises(ValueError, match="uuid"):
         client.create_random_alias(mode="invalid")
+
+
+def _paged_aliases(pages: dict[int, list[dict]]):
+    """Return a requester that serves aliases per page_id (empty for unlisted pages)."""
+
+    def requester(method, url, headers, params, json_body):
+        page = int(params.get("page_id", 0)) if params else 0
+        return {"json": {"aliases": pages.get(page, [])}}
+
+    return requester
+
+
+def test_poll_aliases_baselines_on_first_run():
+    requester = _paged_aliases({0: [{"id": 7, "email": "b@x.com"}, {"id": 5, "email": "a@x.com"}]})
+    client = SimpleLoginClient(settings(), requester=requester)
+
+    result = client.poll_aliases(last_id=0)
+
+    assert result["baseline"] is True
+    assert result["aliases"] == []
+    assert result["cursor_id"] == 7  # highest existing alias id becomes the baseline cursor
+
+
+def test_poll_aliases_returns_only_ids_after_cursor():
+    requester = _paged_aliases({0: [{"id": 8, "email": "c@x.com"}, {"id": 7, "email": "b@x.com"}, {"id": 6, "email": "a@x.com"}]})
+    client = SimpleLoginClient(settings(), requester=requester)
+
+    result = client.poll_aliases(last_id=6)
+
+    assert [alias["id"] for alias in result["aliases"]] == [7, 8]
+    assert result["cursor_id"] == 8
+    assert result["baseline"] is False
+
+
+def test_poll_aliases_query_filters_by_email():
+    requester = _paged_aliases({0: [{"id": 8, "email": "news@x.com"}, {"id": 7, "email": "invoice@x.com"}]})
+    client = SimpleLoginClient(settings(), requester=requester)
+
+    result = client.poll_aliases(last_id=6, query="invoice")
+
+    assert [alias["id"] for alias in result["aliases"]] == [7]
+    assert result["cursor_id"] == 8  # cursor still advances past everything examined this poll
+
+
+def test_poll_aliases_limit_truncates_and_flags_more():
+    requester = _paged_aliases({0: [{"id": 9, "email": "c@x.com"}, {"id": 8, "email": "b@x.com"}, {"id": 7, "email": "a@x.com"}]})
+    client = SimpleLoginClient(settings(), requester=requester)
+
+    result = client.poll_aliases(last_id=6, limit=2)
+
+    assert [alias["id"] for alias in result["aliases"]] == [7, 8]
+    assert result["cursor_id"] == 8  # only advance past delivered aliases when more remain
+    assert result["more"] is True
+
+
+def test_poll_aliases_pages_back_to_find_all_new():
+    requester = _paged_aliases(
+        {
+            0: [{"id": 30, "email": "z@x.com"}, {"id": 29, "email": "y@x.com"}],
+            1: [{"id": 28, "email": "w@x.com"}, {"id": 5, "email": "old@x.com"}],
+        }
+    )
+    client = SimpleLoginClient(settings(), requester=requester)
+
+    result = client.poll_aliases(last_id=27)
+
+    assert [alias["id"] for alias in result["aliases"]] == [28, 29, 30]
+    assert result["cursor_id"] == 30

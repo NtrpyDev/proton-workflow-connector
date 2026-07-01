@@ -73,6 +73,12 @@ class Settings:
     watch_unread_only: bool = False
     watch_max_retries: int = 3
     watch_retry_backoff: float = 2.0
+    watch_rules_path: str = ""
+    watch_sink: str = "webhook"
+    watch_file_path: str = ""
+    watch_command: str = ""
+    watch_dead_letter_path: str = ""
+    watch_dead_letter_max_attempts: int = 5
 
     def require_bridge(self) -> None:
         missing = [
@@ -143,4 +149,10 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         watch_unread_only=_env_bool(source, "PROTON_MCP_WATCH_UNREAD_ONLY", False),
         watch_max_retries=_env_int(source, "PROTON_MCP_WATCH_MAX_RETRIES", 3),
         watch_retry_backoff=float(source.get("PROTON_MCP_WATCH_RETRY_BACKOFF", "2")),
+        watch_rules_path=source.get("PROTON_MCP_WATCH_RULES", ""),
+        watch_sink=source.get("PROTON_MCP_WATCH_SINK", "webhook").strip().lower() or "webhook",
+        watch_file_path=source.get("PROTON_MCP_WATCH_FILE", ""),
+        watch_command=source.get("PROTON_MCP_WATCH_COMMAND", ""),
+        watch_dead_letter_path=source.get("PROTON_MCP_WATCH_DEAD_LETTER", ""),
+        watch_dead_letter_max_attempts=_env_int(source, "PROTON_MCP_WATCH_DEAD_LETTER_MAX_ATTEMPTS", 5),
     )

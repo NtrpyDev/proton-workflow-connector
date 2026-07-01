@@ -56,6 +56,54 @@ class SimpleLoginClient:
     def get_alias(self, alias_id: int) -> dict[str, Any]:
         return self._request("GET", f"/api/aliases/{alias_id}")
 
+    def poll_aliases(
+        self,
+        *,
+        last_id: int = 0,
+        query: str | None = None,
+        limit: int = 50,
+        max_pages: int = 20,
+    ) -> dict[str, Any]:
+        """Return aliases created since a stored cursor, for trigger and webhook workflows.
+
+        The cursor is the maximum alias id seen so far. SimpleLogin has no push API, so this mirrors
+        the IMAP :meth:`BridgeMailClient.poll_folder` cursor engine: on the first poll (no cursor)
+        this baselines to the current highest alias id and returns nothing, so consumers are never
+        flooded with the full alias list. Alias ids are monotonic, so a newly created alias always
+        has an id greater than the cursor.
+
+        SimpleLogin returns aliases newest-first, so page 0 already contains the newest alias. When a
+        cursor is set we page back until a page dips to or below the cursor (or ``max_pages`` is hit),
+        which keeps a burst of new aliases from being missed. ``query`` matches a substring of the
+        alias email. If more new aliases exist than ``limit``, the extra ones roll to the next poll.
+        """
+        if limit < 0:
+            raise ValueError("limit must be zero or greater")
+        collected: dict[int, dict[str, Any]] = {}
+        page_items = _alias_page(self.list_aliases(page_id=0))
+        for item in page_items:
+            collected[int(item["id"])] = item
+        head_id = max(collected, default=last_id)
+        if last_id == 0:
+            return {"aliases": [], "cursor_id": head_id, "baseline": True, "more": False}
+
+        page = 1
+        while page < max_pages and page_items and min(int(item["id"]) for item in page_items) > last_id:
+            page_items = _alias_page(self.list_aliases(page_id=page))
+            for item in page_items:
+                collected[int(item["id"])] = item
+            page += 1
+
+        fresh = sorted((item for item in collected.values() if int(item["id"]) > last_id), key=lambda item: int(item["id"]))
+        if query:
+            needle = query.casefold()
+            fresh = [item for item in fresh if needle in str(item.get("email", "")).casefold()]
+        delivered = fresh[:limit] if limit else fresh
+        more = len(fresh) > len(delivered)
+        head_seen = max(collected, default=last_id)
+        cursor_id = int(delivered[-1]["id"]) if more and delivered else head_seen
+        return {"aliases": delivered, "cursor_id": cursor_id, "baseline": False, "more": more}
+
     def create_random_alias(
         self,
         *,
@@ -177,6 +225,11 @@ class SimpleLoginClient:
             data = response.get("json", response)
             return redact_mapping(data) if isinstance(data, dict) else {"data": data}
         return {"data": response}
+
+
+def _alias_page(response: Any) -> list[dict[str, Any]]:
+    aliases = response.get("aliases") if isinstance(response, Mapping) else None
+    return [item for item in (aliases or []) if isinstance(item, Mapping) and item.get("id") is not None]
 
 
 def _compact(value: Mapping[str, Any]) -> dict[str, Any]:
