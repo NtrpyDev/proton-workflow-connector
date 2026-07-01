@@ -1,6 +1,6 @@
 # Tool reference
 
-V1 exposes 58 MCP tools: 45 for Proton Mail through Bridge, 12 for SimpleLogin, and one status tool.
+This connector exposes 59 MCP tools: 46 for Proton Mail through Bridge, 12 for SimpleLogin, and one status tool.
 
 ## Folders
 
@@ -20,6 +20,10 @@ V1 exposes 58 MCP tools: 45 for Proton Mail through Bridge, 12 for SimpleLogin, 
 - `read_thread`: Find messages linked by `Message-ID`, `References`, and `In-Reply-To`.
 - `inspect_attachments`: List attachment metadata, including inline parts.
 - `download_attachment`: Return one attachment as Base64 with its MIME metadata.
+
+## Triggers
+
+- `poll_mailbox`: Return messages that arrived since the last call, using a persistent per-cursor UID position. The first call for a cursor baselines to the current mailbox head and returns nothing, so you only ever receive genuinely new mail. Pass a stable `cursor_name` to track several independent triggers over one folder. This is the tool an agent uses to build "when new mail matching X arrives, do Y" loops. For background push delivery to a webhook, see [WATCH.md](WATCH.md).
 
 ## Sending and drafts
 

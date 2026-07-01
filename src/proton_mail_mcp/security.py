@@ -26,6 +26,7 @@ MAIL_POLICIES = {
     "folder_status": OperationPolicy("mail.read", "read"),
     "search_mail": OperationPolicy("mail.read", "read"),
     "search_all_mail": OperationPolicy("mail.read", "read"),
+    "poll_folder": OperationPolicy("mail.read", "read"),
     "read_mail": OperationPolicy("mail.read", "read"),
     "read_thread": OperationPolicy("mail.read", "read"),
     "inspect_attachments": OperationPolicy("mail.read", "read"),

@@ -1,0 +1,16 @@
+[Unit]
+Description=Proton Workflow Connector mailbox watcher
+After=network-online.target protonmail-bridge-headless.service
+Wants=network-online.target protonmail-bridge-headless.service
+
+[Service]
+Type=simple
+WorkingDirectory=%h/proton-workflow-connector
+ExecStart=%h/proton-workflow-connector/.venv/bin/proton-workflow-watch --env-file %h/.config/proton-workflow-connector/env
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

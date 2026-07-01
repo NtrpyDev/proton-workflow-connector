@@ -10,6 +10,7 @@ from .config import Settings, load_settings
 from .imap_client import BridgeMailClient
 from .security import MAIL_POLICIES, SIMPLELOGIN_POLICIES, GuardedClient, OperationGuard
 from .simplelogin_client import SimpleLoginClient
+from .watch import CursorStore, default_state_path
 
 SERVER_INSTRUCTIONS = (
     "Use this connector only with the user's locally running Proton Mail Bridge and their own SimpleLogin API key. "
@@ -135,6 +136,49 @@ def build_server(
             folders=folders,
             limit=limit,
         )
+
+    _watch_cursors: dict[str, CursorStore] = {}
+
+    def _cursor_store() -> CursorStore:
+        store = _watch_cursors.get("store")
+        if store is None:
+            store = CursorStore.load(default_state_path(settings))
+            _watch_cursors["store"] = store
+        return store
+
+    @mcp.tool()
+    def poll_mailbox(
+        folder: str = "INBOX",
+        cursor_name: str | None = None,
+        query: str | None = None,
+        sender: str | None = None,
+        subject: str | None = None,
+        unread: bool | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """Return messages that arrived since the last poll for building triggers and automations.
+
+        Uses a persistent per-cursor UID position. The first call for a cursor baselines to the
+        current mailbox head and returns no messages, so you only ever receive genuinely new mail.
+        Pass a stable cursor_name to track several independent triggers over the same folder.
+        """
+        name = cursor_name or folder
+        store = _cursor_store()
+        last_uid, uid_validity = store.get(name)
+        result = mail.poll_folder(
+            folder=folder,
+            last_uid=last_uid,
+            uid_validity=uid_validity,
+            query=query,
+            from_=sender,
+            subject=subject,
+            unread=unread,
+            limit=limit,
+        )
+        store.set(name, cursor_uid=result["cursor_uid"], uid_validity=result.get("uid_validity"))
+        store.save()
+        result["cursor_name"] = name
+        return result
 
     @mcp.tool()
     def read_mail(

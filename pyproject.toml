@@ -40,6 +40,7 @@ dev = [
 [project.scripts]
 proton-workflow-connector = "proton_mail_mcp.server:main"
 proton-mail-mcp = "proton_mail_mcp.server:main"
+proton-workflow-watch = "proton_mail_mcp.watch:main"
 
 [project.urls]
 Homepage = "https://github.com/NtrpyDev/proton-workflow-connector"

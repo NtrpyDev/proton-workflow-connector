@@ -64,6 +64,13 @@ class Settings:
     rate_limit_read: int = 120
     rate_limit_write: int = 30
     rate_limit_destructive: int = 5
+    watch_state_path: str = ""
+    watch_poll_interval: float = 60.0
+    watch_folders: tuple[str, ...] = ("INBOX",)
+    watch_webhook_url: str = ""
+    watch_webhook_secret: str = ""
+    watch_limit: int = 50
+    watch_unread_only: bool = False
 
     def require_bridge(self) -> None:
         missing = [
@@ -125,4 +132,11 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         rate_limit_read=_env_int(source, "PROTON_MCP_RATE_LIMIT_READ", 120),
         rate_limit_write=_env_int(source, "PROTON_MCP_RATE_LIMIT_WRITE", 30),
         rate_limit_destructive=_env_int(source, "PROTON_MCP_RATE_LIMIT_DESTRUCTIVE", 5),
+        watch_state_path=source.get("PROTON_MCP_WATCH_STATE", ""),
+        watch_poll_interval=float(source.get("PROTON_MCP_WATCH_INTERVAL", "60")),
+        watch_folders=_env_list(source, "PROTON_MCP_WATCH_FOLDERS") or ("INBOX",),
+        watch_webhook_url=source.get("PROTON_MCP_WATCH_WEBHOOK_URL", ""),
+        watch_webhook_secret=source.get("PROTON_MCP_WATCH_WEBHOOK_SECRET", ""),
+        watch_limit=_env_int(source, "PROTON_MCP_WATCH_LIMIT", 50),
+        watch_unread_only=_env_bool(source, "PROTON_MCP_WATCH_UNREAD_ONLY", False),
     )

@@ -214,6 +214,74 @@ class BridgeMailClient:
             "folders_failed": failed,
         }
 
+    def poll_folder(
+        self,
+        *,
+        folder: str = "INBOX",
+        last_uid: int = 0,
+        uid_validity: int | None = None,
+        query: str | None = None,
+        from_: str | None = None,
+        to: str | None = None,
+        subject: str | None = None,
+        unread: bool | None = None,
+        starred: bool | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        """Return messages that arrived after a stored cursor, for trigger and webhook workflows.
+
+        On the first poll (no cursor) or after an IMAP UIDVALIDITY change, this baselines to the
+        current mailbox head and returns no messages, so consumers are never flooded with backlog.
+        """
+        if limit < 0:
+            raise ValueError("limit must be zero or greater")
+        criteria = build_search_criteria(
+            query=query,
+            from_=from_,
+            to=to,
+            subject=subject,
+            unread=unread,
+            starred=starred,
+        )
+        with self._imap() as conn:
+            status, data = conn.status(_mailbox_arg(folder), "(UIDNEXT UIDVALIDITY)")
+            _require_ok(status, data)
+            stats = _parse_status(data)
+            current_validity = stats.get("uidvalidity")
+            uid_next = stats.get("uidnext", 0)
+            head_uid = max(uid_next - 1, 0)
+
+            baseline = uid_validity is None and last_uid == 0
+            validity_changed = (
+                uid_validity is not None and current_validity is not None and current_validity != uid_validity
+            )
+            if baseline or validity_changed:
+                return {
+                    "folder": folder,
+                    "messages": [],
+                    "cursor_uid": head_uid,
+                    "uid_validity": current_validity,
+                    "baseline": baseline,
+                    "reset": validity_changed,
+                }
+
+            self._select(conn, folder, readonly=True)
+            status, data = conn.uid("SEARCH", None, "UID", f"{last_uid + 1}:*", *criteria)
+            _require_ok(status, data)
+            new_uids = sorted((uid for uid in _split_uid_data(data) if int(uid) > last_uid), key=int)
+            delivered = new_uids[:limit] if limit else new_uids
+            messages = [asdict(self._fetch_summary(conn, uid)) for uid in delivered]
+            cursor_uid = int(delivered[-1]) if delivered else last_uid
+            return {
+                "folder": folder,
+                "messages": messages,
+                "cursor_uid": cursor_uid,
+                "uid_validity": current_validity,
+                "baseline": False,
+                "reset": False,
+                "more": len(new_uids) > len(delivered),
+            }
+
     def read_mail(
         self,
         *,
