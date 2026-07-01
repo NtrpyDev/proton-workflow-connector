@@ -375,7 +375,13 @@ def test_load_rules_file_parses_named_triggers(tmp_path):
         json.dumps(
             {
                 "rules": [
-                    {"name": "invoices", "folder": "INBOX", "from": "billing@x", "unread": True, "webhook_url": "https://a"},
+                    {
+                        "name": "invoices",
+                        "folder": "INBOX",
+                        "from": "billing@x",
+                        "unread": True,
+                        "webhook_url": "https://a",
+                    },
                     {"name": "new-aliases", "source": "simplelogin_alias", "query": "shop"},
                 ]
             }

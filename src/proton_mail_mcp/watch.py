@@ -255,7 +255,9 @@ def make_webhook_sink(settings: Settings, url: str) -> Sink:
             attempts=settings.watch_max_retries,
             backoff=settings.watch_retry_backoff,
         )
-        logger.info("Delivered %s event for rule %r via webhook (HTTP %s)", event.get("type"), event.get("rule"), status)
+        logger.info(
+            "Delivered %s event for rule %r via webhook (HTTP %s)", event.get("type"), event.get("rule"), status
+        )
 
     return sink
 

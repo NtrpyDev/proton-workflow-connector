@@ -153,7 +153,9 @@ def test_poll_aliases_baselines_on_first_run():
 
 
 def test_poll_aliases_returns_only_ids_after_cursor():
-    requester = _paged_aliases({0: [{"id": 8, "email": "c@x.com"}, {"id": 7, "email": "b@x.com"}, {"id": 6, "email": "a@x.com"}]})
+    requester = _paged_aliases(
+        {0: [{"id": 8, "email": "c@x.com"}, {"id": 7, "email": "b@x.com"}, {"id": 6, "email": "a@x.com"}]}
+    )
     client = SimpleLoginClient(settings(), requester=requester)
 
     result = client.poll_aliases(last_id=6)
@@ -174,7 +176,9 @@ def test_poll_aliases_query_filters_by_email():
 
 
 def test_poll_aliases_limit_truncates_and_flags_more():
-    requester = _paged_aliases({0: [{"id": 9, "email": "c@x.com"}, {"id": 8, "email": "b@x.com"}, {"id": 7, "email": "a@x.com"}]})
+    requester = _paged_aliases(
+        {0: [{"id": 9, "email": "c@x.com"}, {"id": 8, "email": "b@x.com"}, {"id": 7, "email": "a@x.com"}]}
+    )
     client = SimpleLoginClient(settings(), requester=requester)
 
     result = client.poll_aliases(last_id=6, limit=2)

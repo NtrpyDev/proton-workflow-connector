@@ -94,7 +94,8 @@ class SimpleLoginClient:
                 collected[int(item["id"])] = item
             page += 1
 
-        fresh = sorted((item for item in collected.values() if int(item["id"]) > last_id), key=lambda item: int(item["id"]))
+        newer = (item for item in collected.values() if int(item["id"]) > last_id)
+        fresh = sorted(newer, key=lambda item: int(item["id"]))
         if query:
             needle = query.casefold()
             fresh = [item for item in fresh if needle in str(item.get("email", "")).casefold()]
