@@ -83,9 +83,11 @@ class FakeIMAP:
         self.commands.append(("logout",))
         return "OK", []
 
+    list_response: list = [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "Archive"']
+
     def list(self):
         self.commands.append(("list",))
-        return "OK", [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "Archive"']
+        return "OK", list(FakeIMAP.list_response)
 
     def create(self, name):
         self.commands.append(("create", name))
@@ -177,6 +179,7 @@ def reset_fakes():
     FakeIMAP.search_result = b"101 102"
     FakeIMAP.subscribe_response = ("OK", [b"subscribed"])
     FakeIMAP.unsubscribe_response = ("OK", [b"unsubscribed"])
+    FakeIMAP.list_response = [b'(\\HasNoChildren) "/" "INBOX"', b'(\\HasNoChildren) "/" "Archive"']
 
 
 def test_build_search_criteria_combines_filters():
@@ -585,3 +588,188 @@ def test_bridge_connections_use_request_timeout(monkeypatch):
 
     assert captured["imap"] == ("127.0.0.1", 1143, {"timeout": 12.5})
     assert captured["smtp"] == ("127.0.0.1", 1025, {"timeout": 12.5})
+
+
+# --- v1.2: richer search, labels, headers, drafts, unsubscribe -----------------------------
+
+from proton_mail_mcp.imap_client import _parse_authentication, _parse_list_unsubscribe  # noqa: E402
+
+
+def _headers_bytes(extra: str) -> bytes:
+    return (
+        "From: News <news@list.example>\r\n"
+        "To: user@example.com\r\n"
+        "Subject: Weekly\r\n"
+        "Date: Tue, 01 Jan 2030 00:00:00 +0000\r\n"
+        "Message-ID: <n1@list.example>\r\n" + extra + "\r\nbody\r\n"
+    ).encode()
+
+
+AUTH_EXTRA = (
+    "Authentication-Results: mail.protonmail.ch; dmarc=pass (p=reject) header.from=list.example; "
+    "dkim=pass; spf=pass\r\n"
+    "X-Pm-Origin: external\r\n"
+    "X-Pm-Content-Encryption: on-delivery\r\n"
+    "X-Pm-Spamscore: 0\r\n"
+    "List-Unsubscribe: <https://list.example/unsub?u=1>, <mailto:unsub@list.example?subject=stop>\r\n"
+    "List-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"
+)
+
+
+def test_build_search_criteria_size_and_attachment():
+    assert build_search_criteria(larger=1000, smaller=5000, has_attachment=True) == [
+        "LARGER",
+        "1000",
+        "SMALLER",
+        "5000",
+        "HEADER",
+        "Content-Type",
+        '"multipart/mixed"',
+    ]
+    assert build_search_criteria(has_attachment=False) == ["NOT", "HEADER", "Content-Type", '"multipart/mixed"']
+
+
+def test_apply_label_copies_into_label_mailbox():
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+
+    result = client.apply_label(message_id="101", label="Receipts", folder="INBOX")
+
+    assert result == {"labeled": True, "message_ids": ["101"], "label": "Labels/Receipts", "folder": "INBOX"}
+    inst = FakeIMAP.instances[0]
+    assert ("uid", "COPY", ("101", '"Labels/Receipts"')) in inst.commands
+    assert ("select", '"INBOX"', False) in inst.commands  # writable select
+
+
+def test_remove_label_expunges_copy_from_label_mailbox():
+    FakeIMAP.messages = {"101": message_bytes()}
+    FakeIMAP.search_result = b"55"  # UID of the copy inside the label mailbox
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+
+    result = client.remove_label(message_id="101", label="Receipts", folder="INBOX")
+
+    assert result["unlabeled"] is True and result["changed"] is True
+    remove_conn = FakeIMAP.instances[-1]
+    assert any(c[0] == "uid" and c[1] == "STORE" and c[2][0] == "55" for c in remove_conn.commands)
+    assert any(c[0] == "uid" and c[1] == "EXPUNGE" for c in remove_conn.commands)
+
+
+def test_remove_label_no_change_when_message_not_labeled():
+    FakeIMAP.messages = {"101": message_bytes()}
+    FakeIMAP.search_result = b""  # not present in the label mailbox
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+
+    result = client.remove_label(message_id="101", label="Receipts", folder="INBOX")
+
+    assert result["changed"] is False
+    assert not any(c[0] == "uid" and c[1] == "EXPUNGE" for c in FakeIMAP.instances[-1].commands)
+
+
+def test_list_labels_returns_only_label_mailboxes():
+    FakeIMAP.list_response = [
+        b'(\\HasNoChildren) "/" "INBOX"',
+        b'(\\Noselect) "/" "Labels"',
+        b'(\\HasNoChildren) "/" "Labels/Receipts"',
+        b'(\\HasNoChildren) "/" "Folders/Work"',
+    ]
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+
+    labels = client.list_labels()
+
+    assert labels == [{"name": "Receipts", "mailbox": "Labels/Receipts", "flags": ["\\HasNoChildren"]}]
+
+
+def test_get_headers_parses_auth_encryption_and_unsubscribe():
+    FakeIMAP.messages = {"101": _headers_bytes(AUTH_EXTRA)}
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+
+    result = client.get_headers(message_id="101")
+
+    auth = result["authentication"]
+    assert auth["dmarc"] == "pass" and auth["dkim"] == "pass" and auth["spf"] == "pass"
+    assert auth["encryption"] == "on-delivery" and auth["origin"] == "external"
+    unsub = result["list_unsubscribe"]
+    assert unsub["one_click"] is True
+    assert {m["type"] for m in unsub["methods"]} == {"http", "mailto"}
+    assert result["headers"]["Subject"] == "Weekly"
+
+
+def test_parse_helpers_handle_missing_headers():
+    empty = BytesParser(policy=policy.default).parsebytes(_headers_bytes(""))
+    assert _parse_list_unsubscribe(empty) == {"present": False, "one_click": False, "methods": []}
+    assert _parse_authentication(empty)["dmarc"] is None
+
+
+def test_draft_reply_saves_to_drafts_without_sending():
+    FakeIMAP.messages = {"101": reply_message_bytes()}
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP, smtp_factory=FakeSMTP)
+
+    result = client.draft_reply(message_id="101", text="thanks")
+
+    assert result["drafted"] is True and result["folder"] == "Drafts"
+    assert FakeSMTP.instances == []  # nothing was sent
+    assert any(c[0] == "append" and c[1] == '"Drafts"' for c in FakeIMAP.instances[-1].commands)
+
+
+def test_draft_forward_saves_to_drafts_without_sending():
+    FakeIMAP.messages = {"101": reply_message_bytes()}
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP, smtp_factory=FakeSMTP)
+
+    result = client.draft_forward(message_id="101", to="dest@example.com")
+
+    assert result["drafted"] is True and result["forwarded"] is True
+    assert FakeSMTP.instances == []
+    assert any(c[0] == "append" for c in FakeIMAP.instances[-1].commands)
+
+
+def test_unsubscribe_via_mailto_sends_from_account():
+    FakeIMAP.messages = {"101": _headers_bytes("List-Unsubscribe: <mailto:unsub@list.example?subject=stop>\r\n")}
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP, smtp_factory=FakeSMTP)
+
+    result = client.unsubscribe(message_id="101")
+
+    assert result["method"] == "mailto"
+    assert result["target"] == "unsub@list.example"
+    assert result["subject"] == "stop"
+    assert len(FakeSMTP.instances) == 1  # an unsubscribe email was sent
+
+
+def test_unsubscribe_prefers_https_one_click(monkeypatch):
+    import sys
+    import types
+
+    calls = {}
+
+    class FakeResponse:
+        status_code = 202
+
+    class FakeClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def post(self, url, data=None, headers=None):
+            calls["url"] = url
+            calls["data"] = data
+            return FakeResponse()
+
+    fake_httpx = types.SimpleNamespace(Client=FakeClient, HTTPError=Exception)
+    monkeypatch.setitem(sys.modules, "httpx", fake_httpx)
+
+    extra = (
+        "List-Unsubscribe: <https://list.example/unsub?u=1>\r\nList-Unsubscribe-Post: List-Unsubscribe=One-Click\r\n"
+    )
+    FakeIMAP.messages = {"101": _headers_bytes(extra)}
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP, smtp_factory=FakeSMTP)
+
+    result = client.unsubscribe(message_id="101")
+
+    assert result["method"] == "http-one-click"
+    assert result["status_code"] == 202
+    assert calls["url"] == "https://list.example/unsub?u=1"
+    assert calls["data"] == {"List-Unsubscribe": "One-Click"}
+    assert FakeSMTP.instances == []  # HTTP path, no email sent

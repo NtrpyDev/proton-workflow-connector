@@ -1,6 +1,6 @@
 # Tool reference
 
-This connector exposes 60 MCP tools: 46 for Proton Mail through Bridge, 13 for SimpleLogin, and one status tool.
+This connector exposes 67 MCP tools: 53 for Proton Mail through Bridge, 13 for SimpleLogin, and one status tool.
 
 ## Folders
 
@@ -18,8 +18,11 @@ This connector exposes 60 MCP tools: 46 for Proton Mail through Bridge, 13 for S
 - `search_all_mail`: Search every selectable folder and remove duplicate Message-IDs.
 - `read_mail`: Read one UID with an optional body limit and read-state update.
 - `read_thread`: Find messages linked by `Message-ID`, `References`, and `In-Reply-To`.
+- `get_headers`: Return full headers plus parsed DMARC/DKIM/SPF, Proton encryption/origin/spam markers, and List-Unsubscribe options. For triage and sender verification.
 - `inspect_attachments`: List attachment metadata, including inline parts.
 - `download_attachment`: Return one attachment as Base64 with its MIME metadata.
+
+`search_mail` and `search_all_mail` also accept `larger`/`smaller` (size in bytes) and a best-effort `has_attachment` filter (matches multipart/mixed).
 
 ## Triggers
 
@@ -34,6 +37,8 @@ For background push delivery to a webhook, file, or command, see [WATCH.md](WATC
 - `reply_mail`: Reply to the sender with correct thread headers.
 - `reply_all`: Reply to all while excluding configured sender addresses.
 - `forward_mail`: Forward text, HTML, and optional original attachments.
+- `draft_reply`: Compose a reply and save it to Drafts for review instead of sending.
+- `draft_forward`: Compose a forward and save it to Drafts for review instead of sending.
 - `create_draft`: Create a draft with an alternate sender and attachments.
 - `update_draft`: Create the replacement before deleting the old draft.
 - `delete_draft`: Move a draft through Trash and expunge it after `confirm=true`.
@@ -46,6 +51,8 @@ Attachment inputs use `filename`, `content_type`, and `content_base64`. Optional
 - `mark_read` and `mark_unread`: Change the IMAP Seen flag.
 - `star_message` and `unstar_message`: Change the IMAP Flagged flag.
 - `move_message` and `copy_message`: Move or copy one UID.
+- `list_labels`, `apply_label`, and `remove_label`: List Proton labels and add/remove them. Labels are additive — labelling does not move the message out of its folder. `Starred` is managed through the star tools.
+- `unsubscribe`: Unsubscribe from a mailing list via its `List-Unsubscribe` header (RFC 8058 one-click over HTTPS, or a `mailto:` sent from your account). Makes an outbound request/email to a sender-controlled address, so use it deliberately.
 - `archive_message` and `trash_message`: Move one UID to the configured folder.
 - `mark_spam` and `mark_not_spam`: Move mail into or out of Spam.
 - `restore_message`: Move one UID from Trash or another folder.

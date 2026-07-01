@@ -40,6 +40,7 @@ class Settings:
     simplelogin_api_key: str = ""
     simplelogin_base_url: str = "https://app.simplelogin.io"
     archive_folder: str = "Archive"
+    labels_folder: str = "Labels"
     trash_folder: str = "Trash"
     drafts_folder: str = "Drafts"
     sent_folder: str = "Sent"
@@ -116,6 +117,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         simplelogin_api_key=source.get("SIMPLELOGIN_API_KEY", ""),
         simplelogin_base_url=source.get("SIMPLELOGIN_BASE_URL", "https://app.simplelogin.io").rstrip("/"),
         archive_folder=source.get("PROTON_ARCHIVE_FOLDER", "Archive"),
+        labels_folder=source.get("PROTON_LABELS_FOLDER", "Labels"),
         trash_folder=source.get("PROTON_TRASH_FOLDER", "Trash"),
         drafts_folder=source.get("PROTON_DRAFTS_FOLDER", "Drafts"),
         sent_folder=source.get("PROTON_SENT_FOLDER", "Sent"),

@@ -94,9 +94,16 @@ def build_server(
         before: str | None = None,
         unread: bool | None = None,
         starred: bool | None = None,
+        larger: int | None = None,
+        smaller: int | None = None,
+        has_attachment: bool | None = None,
         limit: int = 10,
     ) -> list[dict]:
-        """Search mail by IMAP criteria and return message summaries with numeric UIDs."""
+        """Search mail by IMAP criteria and return message summaries with numeric UIDs.
+
+        `larger`/`smaller` filter by message size in bytes. `has_attachment` is a best-effort filter
+        (matches multipart/mixed), so it catches most attachments but is not exhaustive.
+        """
         return mail.search_mail(
             folder=folder,
             query=query,
@@ -107,6 +114,9 @@ def build_server(
             before=before,
             unread=unread,
             starred=starred,
+            larger=larger,
+            smaller=smaller,
+            has_attachment=has_attachment,
             limit=limit,
         )
 
@@ -120,10 +130,16 @@ def build_server(
         before: str | None = None,
         unread: bool | None = None,
         starred: bool | None = None,
+        larger: int | None = None,
+        smaller: int | None = None,
+        has_attachment: bool | None = None,
         folders: list[str] | None = None,
         limit: int = 50,
     ) -> dict:
-        """Search all selectable folders and deduplicate results by Message-ID."""
+        """Search all selectable folders and deduplicate results by Message-ID.
+
+        `larger`/`smaller` filter by size in bytes; `has_attachment` is a best-effort multipart/mixed filter.
+        """
         return mail.search_all_mail(
             query=query,
             from_=sender,
@@ -133,6 +149,9 @@ def build_server(
             before=before,
             unread=unread,
             starred=starred,
+            larger=larger,
+            smaller=smaller,
+            has_attachment=has_attachment,
             folders=folders,
             limit=limit,
         )
@@ -213,6 +232,12 @@ def build_server(
     def read_thread(message_id: str, folder: str = "INBOX", limit: int = 20, max_body_chars: int | None = None) -> dict:
         """Read messages related to one message by Message-ID references."""
         return mail.read_thread(message_id=message_id, folder=folder, limit=limit, max_body_chars=max_body_chars)
+
+    @mcp.tool()
+    def get_headers(message_id: str, folder: str = "INBOX") -> dict:
+        """Return a message's full headers plus parsed DMARC/DKIM/SPF, Proton encryption/origin/spam
+        markers, and any List-Unsubscribe options. Use it for triage and sender verification."""
+        return mail.get_headers(message_id=message_id, folder=folder)
 
     @mcp.tool()
     def inspect_attachments(message_id: str, folder: str = "INBOX") -> list[dict]:
@@ -329,6 +354,58 @@ def build_server(
         )
 
     @mcp.tool()
+    def draft_reply(
+        message_id: str,
+        text: str,
+        folder: str = "INBOX",
+        html: str | None = None,
+        reply_all: bool = False,
+        sender_name: str | None = None,
+        from_address: str | None = None,
+        attachments: list[dict] | None = None,
+    ) -> dict:
+        """Compose a reply and save it to Drafts for review instead of sending it."""
+        return mail.draft_reply(
+            message_id=message_id,
+            text=text,
+            folder=folder,
+            html=html,
+            reply_all=reply_all,
+            sender_name=sender_name,
+            from_address=from_address,
+            attachments=attachments,
+        )
+
+    @mcp.tool()
+    def draft_forward(
+        message_id: str,
+        to: str | list[str],
+        folder: str = "INBOX",
+        text: str = "",
+        html: str | None = None,
+        cc: str | list[str] | None = None,
+        bcc: str | list[str] | None = None,
+        sender_name: str | None = None,
+        from_address: str | None = None,
+        include_original_attachments: bool = True,
+        attachments: list[dict] | None = None,
+    ) -> dict:
+        """Compose a forward and save it to Drafts for review instead of sending it."""
+        return mail.draft_forward(
+            message_id=message_id,
+            to=to,
+            folder=folder,
+            text=text,
+            html=html,
+            cc=cc,
+            bcc=bcc,
+            sender_name=sender_name,
+            from_address=from_address,
+            include_original_attachments=include_original_attachments,
+            attachments=attachments,
+        )
+
+    @mcp.tool()
     def create_draft(
         to: str | list[str],
         subject: str,
@@ -424,6 +501,27 @@ def build_server(
     def copy_message(message_id: str, destination_folder: str, folder: str = "INBOX") -> dict:
         """Copy one message to another folder."""
         return mail.copy_message(message_id=message_id, destination_folder=destination_folder, folder=folder)
+
+    @mcp.tool()
+    def list_labels() -> list[dict]:
+        """List Proton labels (additive tags under the Labels/ prefix). Starred is managed separately."""
+        return mail.list_labels()
+
+    @mcp.tool()
+    def apply_label(message_id: str, label: str, folder: str = "INBOX") -> dict:
+        """Add a Proton label to a message. The message keeps its folder; labels are additive."""
+        return mail.apply_label(message_id=message_id, label=label, folder=folder)
+
+    @mcp.tool()
+    def remove_label(message_id: str, label: str, folder: str = "INBOX") -> dict:
+        """Remove a Proton label from a message without moving or deleting the message."""
+        return mail.remove_label(message_id=message_id, label=label, folder=folder)
+
+    @mcp.tool()
+    def unsubscribe(message_id: str, folder: str = "INBOX") -> dict:
+        """Unsubscribe from a mailing list via its List-Unsubscribe header (one-click HTTPS or mailto).
+        Makes an outbound request or email to an address the sender controls, so use it deliberately."""
+        return mail.unsubscribe(message_id=message_id, folder=folder)
 
     @mcp.tool()
     def archive_message(message_id: str, folder: str = "INBOX") -> dict:

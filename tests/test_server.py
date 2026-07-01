@@ -12,7 +12,7 @@ def test_server_registers_complete_tool_surface():
 
     names = asyncio.run(list_names())
 
-    assert len(names) == 60
+    assert len(names) == 67
     assert {
         "download_attachment",
         "reply_mail",
@@ -24,6 +24,13 @@ def test_server_registers_complete_tool_surface():
         "send_draft",
         "empty_trash",
         "server_status",
+        "get_headers",
+        "draft_reply",
+        "draft_forward",
+        "list_labels",
+        "apply_label",
+        "remove_label",
+        "unsubscribe",
     } <= names
 
 

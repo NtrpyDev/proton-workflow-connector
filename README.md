@@ -19,7 +19,7 @@ This project is not affiliated with, endorsed by, or sponsored by Proton AG. Eac
   JSONL file, or a command, and the `poll_mailbox` and `poll_aliases` tools let agents pull "what's
   new since last time" on demand. See [docs/WATCH.md](docs/WATCH.md).
 
-The server exposes 60 tools. [docs/TOOLS.md](docs/TOOLS.md) describes each one. Proton Contacts are not included because Bridge does not expose them.
+The server exposes 67 tools. [docs/TOOLS.md](docs/TOOLS.md) describes each one. Proton Contacts are not included because Bridge does not expose them.
 
 ## Triggers and automations
 

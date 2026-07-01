@@ -138,6 +138,9 @@ class BridgeMailClient:
         before: str | None = None,
         unread: bool | None = None,
         starred: bool | None = None,
+        larger: int | None = None,
+        smaller: int | None = None,
+        has_attachment: bool | None = None,
         limit: int = 10,
     ) -> list[dict[str, Any]]:
         criteria = build_search_criteria(
@@ -149,6 +152,9 @@ class BridgeMailClient:
             before=before,
             unread=unread,
             starred=starred,
+            larger=larger,
+            smaller=smaller,
+            has_attachment=has_attachment,
         )
         with self._imap() as conn:
             self._select(conn, folder, readonly=True)
@@ -169,6 +175,9 @@ class BridgeMailClient:
         before: str | None = None,
         unread: bool | None = None,
         starred: bool | None = None,
+        larger: int | None = None,
+        smaller: int | None = None,
+        has_attachment: bool | None = None,
         folders: Sequence[str] | None = None,
         limit: int = 50,
     ) -> dict[str, Any]:
@@ -195,6 +204,9 @@ class BridgeMailClient:
                     before=before,
                     unread=unread,
                     starred=starred,
+                    larger=larger,
+                    smaller=smaller,
+                    has_attachment=has_attachment,
                     limit=limit,
                 )
                 for result in results:
@@ -334,6 +346,81 @@ class BridgeMailClient:
             ]
             return {"messages": messages, "match": "references-or-in-reply-to"}
 
+    def get_headers(self, *, message_id: str, folder: str = "INBOX") -> dict[str, Any]:
+        """Return a message's full headers plus parsed authentication, encryption, and unsubscribe info.
+
+        Useful for triage and security checks: ``authentication`` summarizes DMARC/DKIM/SPF results
+        and Proton's own markers (origin, at-rest vs end-to-end encryption, spam score), and
+        ``list_unsubscribe`` exposes any one-click unsubscribe options.
+        """
+        uid = _validate_uid(message_id)
+        with self._imap() as conn:
+            self._select(conn, folder, readonly=True)
+            status, data = conn.uid("FETCH", uid, "(BODY.PEEK[HEADER])")
+            _require_ok(status, data)
+            raw = _extract_fetch_bytes(data)
+        message = BytesParser(policy=policy.default).parsebytes(raw)
+        headers: dict[str, Any] = {}
+        for key in message.keys():
+            if key in headers:
+                continue
+            values = [str(value) for value in message.get_all(key, [])]
+            headers[key] = values[0] if len(values) == 1 else values
+        return {
+            "uid": uid,
+            "headers": headers,
+            "authentication": _parse_authentication(message),
+            "list_unsubscribe": _parse_list_unsubscribe(message),
+        }
+
+    def unsubscribe(self, *, message_id: str, folder: str = "INBOX") -> dict[str, Any]:
+        """Unsubscribe from a mailing list using the message's ``List-Unsubscribe`` header.
+
+        Prefers RFC 8058 one-click over HTTPS (a POST of ``List-Unsubscribe=One-Click``); otherwise
+        falls back to sending the ``mailto:`` unsubscribe from your account. HTTP (non-TLS) one-click
+        links are treated as manual and returned rather than fetched. This makes an outbound request
+        or email to an address the sender controls, so invoke it deliberately per message.
+        """
+        _, message, _ = self._load_message(message_id=message_id, folder=folder, mark_seen=False)
+        info = _parse_list_unsubscribe(message)
+        if not info["present"] or not info["methods"]:
+            return {"unsubscribed": False, "method": None, "detail": "No List-Unsubscribe header", "options": info}
+
+        https = next((m for m in info["methods"] if m["target"].lower().startswith("https://")), None)
+        mailto = next((m for m in info["methods"] if m["type"] == "mailto"), None)
+
+        if https and info["one_click"]:
+            import httpx
+
+            try:
+                with httpx.Client(timeout=self.settings.request_timeout, follow_redirects=True) as client:
+                    response = client.post(
+                        https["target"],
+                        data={"List-Unsubscribe": "One-Click"},
+                        headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    )
+            except httpx.HTTPError as exc:
+                raise RuntimeError(f"One-click unsubscribe request failed: {redact_text(str(exc))}") from exc
+            return {
+                "unsubscribed": response.status_code < 400,
+                "method": "http-one-click",
+                "status_code": response.status_code,
+                "target": https["target"],
+            }
+        if mailto:
+            address, subject = _parse_mailto(mailto["target"])
+            sender = self._resolve_sender(None)
+            outgoing = build_message(sender=sender, to=address, subject=subject or "unsubscribe", text="unsubscribe")
+            self._send_message(outgoing, sender=sender, recipients=[address])
+            return {"unsubscribed": True, "method": "mailto", "target": address, "subject": subject or "unsubscribe"}
+        manual = https or info["methods"][0]
+        return {
+            "unsubscribed": False,
+            "method": "manual",
+            "target": manual["target"],
+            "detail": "No one-click option; open the unsubscribe link manually.",
+        }
+
     def inspect_attachments(self, *, message_id: str, folder: str = "INBOX") -> list[dict[str, Any]]:
         _, message, _ = self._load_message(message_id=message_id, folder=folder, mark_seen=False)
         return [asdict(attachment) for attachment in _attachments(message)]
@@ -402,18 +489,18 @@ class BridgeMailClient:
         self._send_message(message, sender=sender, recipients=recipients)
         return {"sent": True, "sender": sender, "recipients": recipients}
 
-    def reply_mail(
+    def _compose_reply(
         self,
         *,
         message_id: str,
         text: str,
-        folder: str = "INBOX",
-        html: str | None = None,
-        reply_all: bool = False,
-        sender_name: str | None = None,
-        from_address: str | None = None,
-        attachments: Iterable[dict[str, Any]] | None = None,
-    ) -> dict[str, Any]:
+        folder: str,
+        html: str | None,
+        reply_all: bool,
+        sender_name: str | None,
+        from_address: str | None,
+        attachments: Iterable[dict[str, Any]] | None,
+    ) -> tuple[Message, str, list[str]]:
         _, original, _ = self._load_message(message_id=message_id, folder=folder, mark_seen=False)
         sender = self._resolve_sender(from_address)
         to, cc = self._reply_recipients(original, sender=sender, reply_all=reply_all)
@@ -442,9 +529,64 @@ class BridgeMailClient:
             references=references,
             attachments=decoded_attachments,
         )
-        recipients = [*to, *cc]
+        return message, sender, [*to, *cc]
+
+    def reply_mail(
+        self,
+        *,
+        message_id: str,
+        text: str,
+        folder: str = "INBOX",
+        html: str | None = None,
+        reply_all: bool = False,
+        sender_name: str | None = None,
+        from_address: str | None = None,
+        attachments: Iterable[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        message, sender, recipients = self._compose_reply(
+            message_id=message_id,
+            text=text,
+            folder=folder,
+            html=html,
+            reply_all=reply_all,
+            sender_name=sender_name,
+            from_address=from_address,
+            attachments=attachments,
+        )
         self._send_message(message, sender=sender, recipients=recipients)
         return {"sent": True, "reply_all": reply_all, "sender": sender, "recipients": recipients}
+
+    def draft_reply(
+        self,
+        *,
+        message_id: str,
+        text: str,
+        folder: str = "INBOX",
+        html: str | None = None,
+        reply_all: bool = False,
+        sender_name: str | None = None,
+        from_address: str | None = None,
+        attachments: Iterable[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Compose a reply exactly like ``reply_mail`` but save it to Drafts instead of sending."""
+        message, sender, recipients = self._compose_reply(
+            message_id=message_id,
+            text=text,
+            folder=folder,
+            html=html,
+            reply_all=reply_all,
+            sender_name=sender_name,
+            from_address=from_address,
+            attachments=attachments,
+        )
+        saved = self._append_draft(message, folder=self.settings.drafts_folder)
+        return {
+            "drafted": True,
+            "reply_all": reply_all,
+            "sender": sender,
+            "recipients": recipients,
+            "folder": saved["folder"],
+        }
 
     def forward_mail(
         self,
@@ -461,6 +603,75 @@ class BridgeMailClient:
         include_original_attachments: bool = True,
         attachments: Iterable[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
+        message, sender, recipients = self._compose_forward(
+            message_id=message_id,
+            to=to,
+            folder=folder,
+            text=text,
+            html=html,
+            cc=cc,
+            bcc=bcc,
+            sender_name=sender_name,
+            from_address=from_address,
+            include_original_attachments=include_original_attachments,
+            attachments=attachments,
+        )
+        self._send_message(message, sender=sender, recipients=recipients)
+        return {"sent": True, "forwarded": True, "sender": sender, "recipients": recipients}
+
+    def draft_forward(
+        self,
+        *,
+        message_id: str,
+        to: str | Iterable[str],
+        folder: str = "INBOX",
+        text: str = "",
+        html: str | None = None,
+        cc: str | Iterable[str] | None = None,
+        bcc: str | Iterable[str] | None = None,
+        sender_name: str | None = None,
+        from_address: str | None = None,
+        include_original_attachments: bool = True,
+        attachments: Iterable[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        """Compose a forward exactly like ``forward_mail`` but save it to Drafts instead of sending."""
+        message, sender, recipients = self._compose_forward(
+            message_id=message_id,
+            to=to,
+            folder=folder,
+            text=text,
+            html=html,
+            cc=cc,
+            bcc=bcc,
+            sender_name=sender_name,
+            from_address=from_address,
+            include_original_attachments=include_original_attachments,
+            attachments=attachments,
+        )
+        saved = self._append_draft(message, folder=self.settings.drafts_folder)
+        return {
+            "drafted": True,
+            "forwarded": True,
+            "sender": sender,
+            "recipients": recipients,
+            "folder": saved["folder"],
+        }
+
+    def _compose_forward(
+        self,
+        *,
+        message_id: str,
+        to: str | Iterable[str],
+        folder: str,
+        text: str,
+        html: str | None,
+        cc: str | Iterable[str] | None,
+        bcc: str | Iterable[str] | None,
+        sender_name: str | None,
+        from_address: str | None,
+        include_original_attachments: bool,
+        attachments: Iterable[dict[str, Any]] | None,
+    ) -> tuple[Message, str, list[str]]:
         _, original, _ = self._load_message(message_id=message_id, folder=folder, mark_seen=False)
         sender = self._resolve_sender(from_address)
         original_plain, _ = _extract_body(original, max_chars=self.settings.max_body_chars, content_type="text/plain")
@@ -499,8 +710,7 @@ class BridgeMailClient:
         if bcc:
             recipients.extend(normalize_recipients(bcc))
             del message["Bcc"]
-        self._send_message(message, sender=sender, recipients=recipients)
-        return {"sent": True, "forwarded": True, "sender": sender, "recipients": recipients}
+        return message, sender, recipients
 
     def create_draft(
         self,
@@ -533,13 +743,15 @@ class BridgeMailClient:
                 max_total_bytes=self.settings.max_outgoing_attachment_bytes,
             ),
         )
-        target = folder or self.settings.drafts_folder
+        return self._append_draft(message, folder=folder or self.settings.drafts_folder)
+
+    def _append_draft(self, message: Message, *, folder: str) -> dict[str, Any]:
         with self._imap() as conn:
             status, data = conn.append(
-                _mailbox_arg(target), "\\Draft", imaplib.Time2Internaldate(time.time()), message.as_bytes()
+                _mailbox_arg(folder), "\\Draft", imaplib.Time2Internaldate(time.time()), message.as_bytes()
             )
             _require_ok(status, data)
-            return {"created": True, "folder": target, "response": _decode_data(data)}
+            return {"created": True, "folder": folder, "response": _decode_data(data)}
 
     def update_draft(
         self,
@@ -626,6 +838,63 @@ class BridgeMailClient:
             status, data = conn.uid("COPY", uid, _mailbox_arg(destination_folder))
             _require_ok(status, data)
             return {"copied": True, "message_ids": [uid], "destination_folder": destination_folder}
+
+    def list_labels(self) -> list[dict[str, Any]]:
+        """Return Proton labels (selectable mailboxes under the Labels/ prefix).
+
+        Proton labels are additive: a message can carry several, and labelling does not move it out
+        of its folder. The built-in ``Starred`` label is managed through ``star_message`` instead.
+        """
+        prefix = f"{self.settings.labels_folder}/"
+        labels = []
+        for entry in self.list_folders():
+            name = entry["name"]
+            if name.startswith(prefix) and "\\Noselect" not in entry["flags"]:
+                labels.append({"name": name[len(prefix) :], "mailbox": name, "flags": entry["flags"]})
+        return labels
+
+    def apply_label(self, *, message_id: str, label: str, folder: str = "INBOX") -> dict[str, Any]:
+        """Add a Proton label to a message by copying it into the label mailbox; it stays in ``folder``."""
+        uid = _validate_uid(message_id)
+        mailbox = self._label_mailbox(label)
+        with self._imap() as conn:
+            self._select(conn, folder, readonly=False)
+            status, data = conn.uid("COPY", uid, _mailbox_arg(mailbox))
+            _require_ok(status, data)
+        return {"labeled": True, "message_ids": [uid], "label": mailbox, "folder": folder}
+
+    def remove_label(self, *, message_id: str, label: str, folder: str = "INBOX") -> dict[str, Any]:
+        """Remove a Proton label by expunging the message's copy from the label mailbox.
+
+        Expunging from a label mailbox drops the label only; the message stays in its folder. The
+        message keeps a different UID inside the label mailbox, so we locate it by ``Message-ID``.
+        """
+        uid = _validate_uid(message_id)
+        mailbox = self._label_mailbox(label)
+        _, message, _ = self._load_message(message_id=uid, folder=folder, mark_seen=False)
+        header_message_id = _header(message, "Message-ID")
+        if not header_message_id:
+            raise RuntimeError("Message cannot be unlabeled because it has no Message-ID header")
+        with self._imap() as conn:
+            self._select(conn, mailbox, readonly=False)
+            status, data = conn.uid("SEARCH", None, "HEADER", "MESSAGE-ID", _quote_search_value(header_message_id))
+            _require_ok(status, data)
+            label_uids = _split_uid_data(data)
+            if not label_uids:
+                return {"unlabeled": True, "changed": False, "label": mailbox, "message_ids": [uid]}
+            uid_set = ",".join(label_uids)
+            status, data = conn.uid("STORE", uid_set, "+FLAGS.SILENT", "(\\Deleted)")
+            _require_ok(status, data)
+            status, data = conn.uid("EXPUNGE", uid_set)
+            _require_ok(status, data)
+        return {"unlabeled": True, "changed": True, "label": mailbox, "message_ids": [uid]}
+
+    def _label_mailbox(self, label: str) -> str:
+        name = label.strip()
+        if not name:
+            raise ValueError("label must be a non-empty label name")
+        prefix = f"{self.settings.labels_folder}/"
+        return name if name.startswith(prefix) else f"{prefix}{name}"
 
     def archive_message(self, *, message_id: str, folder: str = "INBOX") -> dict[str, Any]:
         return self.move_message(message_id=message_id, folder=folder, destination_folder=self.settings.archive_folder)
@@ -1042,6 +1311,9 @@ def build_search_criteria(
     before: str | None = None,
     unread: bool | None = None,
     starred: bool | None = None,
+    larger: int | None = None,
+    smaller: int | None = None,
+    has_attachment: bool | None = None,
 ) -> list[str]:
     criteria: list[str] = []
     if query:
@@ -1064,6 +1336,16 @@ def build_search_criteria(
         criteria.append("FLAGGED")
     elif starred is False:
         criteria.append("UNFLAGGED")
+    if larger is not None:
+        criteria.extend(["LARGER", str(int(larger))])
+    if smaller is not None:
+        criteria.extend(["SMALLER", str(int(smaller))])
+    # IMAP has no "has attachment" key, so approximate with the multipart/mixed content type.
+    # This is a best-effort heuristic: it catches most attachments but can miss unusual layouts.
+    if has_attachment is True:
+        criteria.extend(["HEADER", "Content-Type", _quote_search_value("multipart/mixed")])
+    elif has_attachment is False:
+        criteria.extend(["NOT", "HEADER", "Content-Type", _quote_search_value("multipart/mixed")])
     return criteria or ["ALL"]
 
 
@@ -1189,6 +1471,51 @@ def _extract_flags(data: Any) -> list[str]:
 def _header(message: Message, name: str) -> str | None:
     value = message.get(name)
     return str(value) if value is not None else None
+
+
+def _parse_authentication(message: Message) -> dict[str, Any]:
+    """Summarize sender authentication and Proton's own delivery markers from the headers."""
+    result: dict[str, Any] = {
+        "origin": _header(message, "X-Pm-Origin"),
+        "encryption": _header(message, "X-Pm-Content-Encryption"),
+        "spam_score": _header(message, "X-Pm-Spamscore"),
+        "spam_action": _header(message, "X-Pm-Spam-Action"),
+        "dmarc": None,
+        "dkim": None,
+        "spf": None,
+    }
+    combined = " ".join(str(value) for value in message.get_all("Authentication-Results", []))
+    for key in ("dmarc", "dkim", "spf"):
+        match = re.search(rf"\b{key}=(\w+)", combined, flags=re.IGNORECASE)
+        if match:
+            result[key] = match.group(1).lower()
+    return result
+
+
+def _parse_list_unsubscribe(message: Message) -> dict[str, Any]:
+    """Parse the List-Unsubscribe / List-Unsubscribe-Post headers into structured options."""
+    raw = _header(message, "List-Unsubscribe")
+    if not raw:
+        return {"present": False, "one_click": False, "methods": []}
+    methods: list[dict[str, str]] = []
+    for target in re.findall(r"<([^>]+)>", raw):
+        target = target.strip()
+        if target.lower().startswith("mailto:"):
+            methods.append({"type": "mailto", "target": target})
+        elif target.lower().startswith("http"):
+            methods.append({"type": "http", "target": target})
+    post = _header(message, "List-Unsubscribe-Post") or ""
+    return {"present": True, "one_click": "one-click" in post.lower(), "methods": methods}
+
+
+def _parse_mailto(value: str) -> tuple[str, str | None]:
+    """Split a ``mailto:`` unsubscribe target into an address and optional subject."""
+    from urllib.parse import parse_qs, unquote
+
+    rest = value[len("mailto:") :] if value.lower().startswith("mailto:") else value
+    address, _, query = rest.partition("?")
+    subject = parse_qs(query).get("subject", [None])[0]
+    return unquote(address), (unquote(subject) if subject else None)
 
 
 def _mailbox_arg(name: str) -> str:
