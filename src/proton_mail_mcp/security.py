@@ -93,6 +93,9 @@ SIMPLELOGIN_POLICIES = {
 }
 
 
+SEND_METHODS = frozenset({"send_mail", "reply_mail", "forward_mail", "send_draft"})
+
+
 class OperationGuard:
     def __init__(self, settings: Settings, *, enforce_auth: bool) -> None:
         self.settings = settings
@@ -100,7 +103,20 @@ class OperationGuard:
         self._events: dict[tuple[str, str], deque[float]] = defaultdict(deque)
         self._lock = threading.Lock()
 
+    def _enforce_mode(self, policy: OperationPolicy, name: str, kwargs: dict[str, Any]) -> None:
+        """Block writes/sends up front based on read-only, allow-send, and allowed-actions settings."""
+        if kwargs.get("dry_run"):
+            return  # a dry-run mutates nothing, so previews are allowed even in read-only mode
+        if self.settings.read_only and policy.category in ("write", "destructive"):
+            raise PermissionError(f"{name!r} is blocked: server is read-only (PROTON_MCP_READ_ONLY)")
+        if not self.settings.allow_send and name in SEND_METHODS:
+            raise PermissionError(f"{name!r} is blocked: sending is disabled (PROTON_MCP_ALLOW_SEND=false)")
+        if self.settings.allowed_actions and policy.category not in self.settings.allowed_actions:
+            allowed = ", ".join(self.settings.allowed_actions)
+            raise PermissionError(f"{name!r} ({policy.category}) is not in PROTON_MCP_ALLOWED_ACTIONS ({allowed})")
+
     def invoke(self, policy: OperationPolicy, name: str, function, args: tuple[Any, ...], kwargs: dict[str, Any]):
+        self._enforce_mode(policy, name, kwargs)
         actor = self._authorize_and_limit(policy)
         try:
             result = function(*args, **kwargs)

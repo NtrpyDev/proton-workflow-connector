@@ -388,6 +388,13 @@ def _parse_actions(raw: Any, *, rule_name: str, source: str) -> tuple[dict[str, 
             if item.get("text"):
                 action["text"] = str(item["text"])
         parsed.append(action)
+    kinds = {action["type"] for action in parsed}
+    if kinds & MOVE_ACTIONS and FORWARD_ACTION in kinds:
+        raise ValueError(
+            f"Rule {rule_name!r}: combining a move action (archive/trash/move) with forward is not "
+            "supported, because the moved message gets a new UID that a retry cannot forward reliably. "
+            "Split them into separate rules."
+        )
     return tuple(parsed)
 
 

@@ -115,3 +115,15 @@ def test_hosted_server_configures_oauth_and_transport_security():
     assert server.settings.auth.issuer_url.unicode_string() == "https://issuer.example.com/"
     assert server.settings.transport_security.allowed_hosts == ["mail.example.com"]
     assert server.settings.transport_security.allowed_origins == ["https://client.example.com"]
+
+
+def test_tools_expose_mcp_annotations():
+    async def annotations():
+        return {tool.name: tool.annotations for tool in await build_server().list_tools()}
+
+    ann = asyncio.run(annotations())
+    assert ann["read_mail"].readOnlyHint is True
+    assert ann["read_mail"].idempotentHint is True
+    assert ann["permanently_delete_message"].destructiveHint is True
+    assert ann["send_mail"].readOnlyHint is False
+    assert ann["send_mail"].openWorldHint is True

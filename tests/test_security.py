@@ -50,3 +50,47 @@ def test_audit_log_excludes_message_content_and_tokens(monkeypatch, tmp_path):
     assert record["target"] == {"message_id": "1"}
     assert "private body" not in audit_path.read_text()
     assert "hidden" not in audit_path.read_text()
+
+
+class ModeClient:
+    def write(self, **kwargs):
+        return {"ok": True}
+
+    def read(self, **kwargs):
+        return {"ok": True}
+
+    def send_mail(self, **kwargs):
+        return {"ok": True}
+
+
+def _mode_client(settings, policies):
+    return GuardedClient(ModeClient(), OperationGuard(settings, enforce_auth=False), policies)
+
+
+def test_read_only_blocks_writes_but_allows_reads():
+    policies = {"write": OperationPolicy("mail.write", "write"), "read": OperationPolicy("mail.read", "read")}
+    client = _mode_client(Settings(read_only=True), policies)
+    with pytest.raises(PermissionError, match="read-only"):
+        client.write(message_id="1")
+    assert client.read()["ok"] is True
+
+
+def test_read_only_allows_dry_run_preview():
+    client = _mode_client(Settings(read_only=True), {"write": OperationPolicy("mail.write", "write")})
+    assert client.write(dry_run=True)["ok"] is True
+
+
+def test_allow_send_false_blocks_send_only():
+    policies = {"send_mail": OperationPolicy("mail.write", "write"), "write": OperationPolicy("mail.write", "write")}
+    client = _mode_client(Settings(allow_send=False), policies)
+    with pytest.raises(PermissionError, match="sending is disabled"):
+        client.send_mail(to="x@example.com")
+    assert client.write(message_id="1")["ok"] is True  # other writes still allowed
+
+
+def test_allowed_actions_restricts_by_category():
+    policies = {"write": OperationPolicy("mail.write", "write"), "read": OperationPolicy("mail.read", "read")}
+    client = _mode_client(Settings(allowed_actions=("read",)), policies)
+    assert client.read()["ok"] is True
+    with pytest.raises(PermissionError, match="ALLOWED_ACTIONS"):
+        client.write(message_id="1")

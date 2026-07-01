@@ -739,7 +739,93 @@ def build_server(
             "oauth_configured": bool(settings.oauth_issuer_url),
         }
 
+    _apply_tool_annotations(mcp)
     return mcp
+
+
+# Tools that only read state, that permanently destroy data, and that reach an external service.
+# Everything not listed is treated as a non-destructive write.
+_READ_TOOLS = frozenset(
+    {
+        "list_folders",
+        "folder_status",
+        "search_mail",
+        "search_all_mail",
+        "read_mail",
+        "read_thread",
+        "get_headers",
+        "inspect_attachments",
+        "download_attachment",
+        "list_labels",
+        "poll_mailbox",
+        "poll_aliases",
+        "simplelogin_user_info",
+        "simplelogin_stats",
+        "simplelogin_list_aliases",
+        "simplelogin_get_alias",
+        "simplelogin_list_alias_contacts",
+        "simplelogin_list_mailboxes",
+        "server_status",
+    }
+)
+_DESTRUCTIVE_TOOLS = frozenset(
+    {
+        "delete_folder",
+        "delete_draft",
+        "permanently_delete_message",
+        "bulk_permanently_delete",
+        "empty_trash",
+        "empty_spam",
+        "simplelogin_delete_alias",
+    }
+)
+_OPEN_WORLD_TOOLS = frozenset(
+    {
+        "send_mail",
+        "reply_mail",
+        "reply_all",
+        "forward_mail",
+        "send_draft",
+        "unsubscribe",
+        "poll_aliases",
+        "simplelogin_user_info",
+        "simplelogin_stats",
+        "simplelogin_list_aliases",
+        "simplelogin_get_alias",
+        "simplelogin_create_random_alias",
+        "simplelogin_create_custom_alias",
+        "simplelogin_update_alias",
+        "simplelogin_toggle_alias",
+        "simplelogin_delete_alias",
+        "simplelogin_list_alias_contacts",
+        "simplelogin_create_alias_contact",
+        "simplelogin_list_mailboxes",
+        "server_status",
+    }
+)
+
+
+def _apply_tool_annotations(mcp) -> None:
+    """Tag every registered tool with MCP hints (read-only / destructive / idempotent / open-world).
+
+    Derived from the same read/write/destructive classification the operation guard uses, so clients
+    can warn before destructive calls and safely batch read-only ones.
+    """
+    try:
+        from mcp.types import ToolAnnotations
+
+        tools = mcp._tool_manager._tools
+    except Exception:  # pragma: no cover - defensive: never fail server build over annotations
+        return
+    for name, tool in tools.items():
+        read_only = name in _READ_TOOLS
+        destructive = name in _DESTRUCTIVE_TOOLS
+        tool.annotations = ToolAnnotations(
+            readOnlyHint=read_only,
+            destructiveHint=destructive,
+            idempotentHint=read_only,
+            openWorldHint=name in _OPEN_WORLD_TOOLS,
+        )
 
 
 def main(argv: Sequence[str] | None = None) -> None:

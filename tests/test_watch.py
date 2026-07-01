@@ -729,3 +729,10 @@ def test_run_watch_action_only_rule_runs_actions_without_delivery(tmp_path):
     kinds = [c[0] for c in client.calls]
     assert kinds == ["mark_read", "archive"]
     assert store.get("triage") == (42, 7)
+
+
+def test_rules_file_rejects_move_plus_forward(tmp_path):
+    path = tmp_path / "r.json"
+    path.write_text(json.dumps([{"name": "a", "actions": [{"type": "archive"}, {"type": "forward", "to": "x@y.com"}]}]))
+    with pytest.raises(ValueError, match="move action"):
+        load_rules_file(path)
