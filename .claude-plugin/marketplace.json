@@ -1,0 +1,15 @@
+{
+  "name": "proton-workflow-connector",
+  "owner": {
+    "name": "NtrpyDev",
+    "url": "https://github.com/NtrpyDev"
+  },
+  "plugins": [
+    {
+      "name": "proton-workflow-connector",
+      "source": "./plugins/proton-workflow-connector",
+      "description": "Self-hosted Proton Mail Bridge and SimpleLogin tools over MCP. Requires a locally running Proton Mail Bridge and the proton-workflow-connector package on PATH.",
+      "category": "productivity"
+    }
+  ]
+}

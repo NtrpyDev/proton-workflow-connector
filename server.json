@@ -1,0 +1,48 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.ntrpydev/proton-workflow-connector",
+  "description": "Unofficial self-hosted MCP connector for Proton Mail Bridge and SimpleLogin. Not affiliated with Proton AG.",
+  "repository": {
+    "url": "https://github.com/NtrpyDev/proton-workflow-connector",
+    "source": "github"
+  },
+  "version": "1.2.1",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "proton-workflow-connector",
+      "version": "1.2.1",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "PROTON_BRIDGE_USERNAME",
+          "description": "Bridge IMAP/SMTP username (from the Bridge app)",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "PROTON_BRIDGE_PASSWORD",
+          "description": "Bridge-generated password (never your Proton account password)",
+          "isRequired": true,
+          "isSecret": true
+        },
+        {
+          "name": "PROTON_BRIDGE_EMAIL",
+          "description": "Primary Proton address served by Bridge",
+          "isRequired": true,
+          "isSecret": false
+        },
+        {
+          "name": "SIMPLELOGIN_API_KEY",
+          "description": "SimpleLogin API key; omit to disable alias tools",
+          "isRequired": false,
+          "isSecret": true
+        }
+      ]
+    }
+  ]
+}

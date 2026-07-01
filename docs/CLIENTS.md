@@ -33,7 +33,18 @@ Keep HTTP on localhost unless you have completed [HOSTING.md](HOSTING.md).
 
 Claude Code supports local stdio MCP servers and remote HTTP MCP servers.
 
-Add the local stdio server:
+Install as a plugin (easiest):
+
+```
+/plugin marketplace add NtrpyDev/proton-workflow-connector
+/plugin install proton-workflow-connector@proton-workflow-connector
+```
+
+The plugin runs `proton-workflow-connector` from your PATH, so install the package first
+(`pip install proton-workflow-connector`) and put your Bridge credentials in the environment
+Claude Code starts from.
+
+Or add the local stdio server directly:
 
 ```bash
 claude mcp add --transport stdio --scope user proton-workflow \

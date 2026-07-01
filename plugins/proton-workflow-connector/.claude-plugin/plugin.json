@@ -1,0 +1,19 @@
+{
+  "name": "proton-workflow-connector",
+  "version": "1.2.1",
+  "description": "Unofficial self-hosted MCP connector for Proton Mail Bridge and SimpleLogin. Not affiliated with Proton AG.",
+  "author": {
+    "name": "NtrpyDev",
+    "url": "https://github.com/NtrpyDev"
+  },
+  "homepage": "https://github.com/NtrpyDev/proton-workflow-connector",
+  "repository": "https://github.com/NtrpyDev/proton-workflow-connector",
+  "license": "MIT",
+  "keywords": ["mcp", "proton-mail", "simplelogin", "imap", "smtp"],
+  "mcpServers": {
+    "proton_workflow": {
+      "command": "proton-workflow-connector",
+      "args": ["--transport", "stdio"]
+    }
+  }
+}
