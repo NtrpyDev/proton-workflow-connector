@@ -46,6 +46,8 @@ Everything is also configurable through the environment (see `.env.example`):
 | `PROTON_MCP_WATCH_INTERVAL` | Seconds between polls. |
 | `PROTON_MCP_WATCH_LIMIT` | Max messages emitted per folder per poll. |
 | `PROTON_MCP_WATCH_UNREAD_ONLY` | Only emit events for unread messages. |
+| `PROTON_MCP_WATCH_MAX_RETRIES` | Delivery attempts per event before the cursor is held. |
+| `PROTON_MCP_WATCH_RETRY_BACKOFF` | Base seconds for exponential backoff between retries. |
 | `PROTON_MCP_WATCH_STATE` | Cursor state file location. |
 
 Use `--once` to poll a single time and exit, which suits `cron` or a systemd timer. For a
@@ -93,6 +95,17 @@ def verify(secret: str, body: bytes, header: str) -> bool:
 ```
 
 Compute the HMAC over the exact bytes you received, before any JSON re-serialization.
+
+## Delivery guarantees
+
+Push delivery is **at-least-once**. Transient failures (a network error, HTTP 429, or any 5xx) are
+retried with exponential backoff up to `PROTON_MCP_WATCH_MAX_RETRIES`. If an event still cannot be
+delivered, the watcher holds the cursor at the last accepted message and retries the rest on the next
+poll instead of advancing past — so a webhook outage delays events rather than dropping them. A 4xx
+other than 429 is treated as a configuration error and is not retried.
+
+Because delivery is at-least-once, a receiver can see the same event twice after a partial failure.
+Deduplicate on `message.message_id` (or `folder` + `message.uid`) if your workflow is not idempotent.
 
 ## Pull: the `poll_mailbox` tool
 

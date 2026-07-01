@@ -71,6 +71,8 @@ class Settings:
     watch_webhook_secret: str = ""
     watch_limit: int = 50
     watch_unread_only: bool = False
+    watch_max_retries: int = 3
+    watch_retry_backoff: float = 2.0
 
     def require_bridge(self) -> None:
         missing = [
@@ -139,4 +141,6 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         watch_webhook_secret=source.get("PROTON_MCP_WATCH_WEBHOOK_SECRET", ""),
         watch_limit=_env_int(source, "PROTON_MCP_WATCH_LIMIT", 50),
         watch_unread_only=_env_bool(source, "PROTON_MCP_WATCH_UNREAD_ONLY", False),
+        watch_max_retries=_env_int(source, "PROTON_MCP_WATCH_MAX_RETRIES", 3),
+        watch_retry_backoff=float(source.get("PROTON_MCP_WATCH_RETRY_BACKOFF", "2")),
     )

@@ -124,40 +124,78 @@ def build_event(rule_name: str, folder: str, message: Mapping[str, Any]) -> dict
     }
 
 
+class WebhookDeliveryError(RuntimeError):
+    """Raised when an event could not be delivered after exhausting retries."""
+
+
 def deliver_webhook(
     url: str,
     event: Mapping[str, Any],
     *,
     secret: str = "",
     timeout: float = 30.0,
+    attempts: int = 1,
+    backoff: float = 2.0,
     transport: Any | None = None,
+    sleep: Any = time.sleep,
 ) -> int:
-    """POST one event as JSON. Returns the HTTP status code. ``transport`` is injectable for tests."""
+    """POST one event as JSON, retrying transient failures. Returns the HTTP status code on success.
+
+    A 2xx/3xx response succeeds. Server errors (>=500) and 429 are retried with exponential backoff
+    up to ``attempts`` times; a network error is treated the same way. Other 4xx responses are
+    configuration problems, so they fail immediately. After the final attempt a
+    :class:`WebhookDeliveryError` is raised so the caller can hold the cursor and retry next cycle.
+    """
     import httpx
 
     body = json.dumps(event, sort_keys=True).encode("utf-8")
     headers = {"Content-Type": "application/json", EVENT_HEADER: str(event.get("type", EVENT_TYPE))}
     if secret:
         headers[SIGNATURE_HEADER] = sign_payload(secret, body)
-    with httpx.Client(timeout=timeout, transport=transport) as client:
-        response = client.post(url, content=body, headers=headers)
-    return response.status_code
+
+    total = max(attempts, 1)
+    last_detail = ""
+    for attempt in range(total):
+        try:
+            with httpx.Client(timeout=timeout, transport=transport) as client:
+                response = client.post(url, content=body, headers=headers)
+        except httpx.HTTPError as exc:
+            last_detail = f"network error: {redact_text(str(exc))}"
+        else:
+            if response.status_code < 400:
+                return response.status_code
+            if response.status_code != 429 and response.status_code < 500:
+                raise WebhookDeliveryError(f"Webhook rejected event with HTTP {response.status_code}")
+            last_detail = f"HTTP {response.status_code}"
+        if attempt < total - 1:
+            sleep(backoff * (2**attempt))
+    raise WebhookDeliveryError(f"Webhook delivery failed after {total} attempt(s): {last_detail}")
 
 
 def poll_rule(
     client: BridgeMailClient,
     rule: WatchRule,
     store: CursorStore,
-) -> list[dict[str, Any]]:
-    """Poll one rule, advance its cursor, and return the events for any new messages found."""
+) -> dict[str, Any]:
+    """Poll one rule and return its events plus the cursor to commit. Does not persist state itself.
+
+    Persistence is the caller's job so that push delivery can hold the cursor when a webhook fails,
+    giving at-least-once delivery instead of silently dropping events past an advanced cursor.
+    """
     last_uid, uid_validity = store.get(rule.name)
     result = client.poll_folder(folder=rule.folder, last_uid=last_uid, uid_validity=uid_validity, **rule.criteria())
-    store.set(rule.name, cursor_uid=result["cursor_uid"], uid_validity=result.get("uid_validity"))
     if result.get("baseline"):
         logger.info("Baselined rule %r at UID %s (no backlog delivered)", rule.name, result["cursor_uid"])
     if result.get("reset"):
         logger.warning("UIDVALIDITY changed for rule %r; re-baselined at UID %s", rule.name, result["cursor_uid"])
-    return [build_event(rule.name, rule.folder, message) for message in result["messages"]]
+    return {
+        "events": [build_event(rule.name, rule.folder, message) for message in result["messages"]],
+        "cursor_uid": result["cursor_uid"],
+        "uid_validity": result.get("uid_validity"),
+        "baseline": result.get("baseline", False),
+        "reset": result.get("reset", False),
+        "prior_uid": last_uid,
+    }
 
 
 def rules_from_settings(settings: Settings) -> list[WatchRule]:
@@ -194,11 +232,10 @@ def run_watch(
             event,
             secret=settings.watch_webhook_secret,
             timeout=settings.request_timeout,
+            attempts=settings.watch_max_retries,
+            backoff=settings.watch_retry_backoff,
         )
-        if status >= 400:
-            logger.error("Webhook rejected event for rule %r with HTTP %s", event.get("rule"), status)
-        else:
-            logger.info("Delivered %s event for rule %r (HTTP %s)", event.get("type"), event.get("rule"), status)
+        logger.info("Delivered %s event for rule %r (HTTP %s)", event.get("type"), event.get("rule"), status)
 
     total = 0
     interval = max(settings.watch_poll_interval, 1.0)
@@ -206,17 +243,35 @@ def run_watch(
     while True:
         for rule in rules:
             try:
-                events = poll_rule(client, rule, store)
+                outcome = poll_rule(client, rule, store)
             except Exception as exc:  # keep the loop alive; one bad poll should not stop the watcher
                 logger.error("Poll failed for rule %r: %s", rule.name, redact_text(str(exc)))
                 continue
-            for event in events:
-                total += 1
+
+            # For baseline, reset, or an empty poll there is nothing to deliver: commit the head.
+            if not outcome["events"]:
+                store.set(rule.name, cursor_uid=outcome["cursor_uid"], uid_validity=outcome["uid_validity"])
+                store.save()
+                continue
+
+            # Deliver in UID order and only advance the cursor past events that were accepted.
+            # A failed delivery holds the cursor so the event is retried on the next poll.
+            committed = outcome["prior_uid"]
+            for event in outcome["events"]:
                 try:
                     emit(event)
                 except Exception as exc:
-                    logger.error("Delivery failed for rule %r: %s", rule.name, redact_text(str(exc)))
-        store.save()
+                    logger.error(
+                        "Delivery failed for rule %r; holding cursor at UID %s to retry: %s",
+                        rule.name,
+                        committed,
+                        redact_text(str(exc)),
+                    )
+                    break
+                total += 1
+                committed = int(event["message"]["uid"])
+            store.set(rule.name, cursor_uid=committed, uid_validity=outcome["uid_validity"])
+            store.save()
         if once:
             return total
         time.sleep(interval)

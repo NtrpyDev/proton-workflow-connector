@@ -12,6 +12,7 @@ from proton_mail_mcp.imap_client import BridgeMailClient
 from proton_mail_mcp.watch import (
     CursorStore,
     WatchRule,
+    WebhookDeliveryError,
     build_event,
     deliver_webhook,
     poll_rule,
@@ -153,19 +154,104 @@ def test_cursor_store_roundtrip(tmp_path):
     assert reopened.get("missing") == (0, None)
 
 
-def test_poll_rule_emits_events_and_advances_cursor(tmp_path):
+def test_poll_rule_returns_events_and_cursor_without_persisting(tmp_path):
     FakeIMAP.search_uids = b"18 19"
     client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
     store = CursorStore.load(tmp_path / "state.json")
     store.set("inbox", cursor_uid=17, uid_validity=7)
     rule = WatchRule(name="inbox", folder="INBOX")
 
-    events = poll_rule(client, rule, store)
+    outcome = poll_rule(client, rule, store)
 
-    assert [event["type"] for event in events] == ["mail.received", "mail.received"]
-    assert events[0]["rule"] == "inbox"
-    assert events[0]["message"]["uid"] == "18"
-    assert store.get("inbox") == (19, 7)
+    assert [event["type"] for event in outcome["events"]] == ["mail.received", "mail.received"]
+    assert outcome["events"][0]["rule"] == "inbox"
+    assert outcome["events"][0]["message"]["uid"] == "18"
+    assert outcome["cursor_uid"] == 19
+    assert outcome["prior_uid"] == 17
+    # poll_rule must not persist: the caller commits only after delivery succeeds.
+    assert store.get("inbox") == (17, 7)
+
+
+def test_deliver_webhook_retries_transient_failure_then_succeeds():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200) if calls["n"] >= 2 else httpx.Response(503)
+
+    status = deliver_webhook(
+        "https://hook.example/ingest",
+        build_event("inbox", "INBOX", {"uid": "18"}),
+        attempts=3,
+        transport=httpx.MockTransport(handler),
+        sleep=lambda _seconds: None,
+    )
+
+    assert status == 200
+    assert calls["n"] == 2
+
+
+def test_deliver_webhook_raises_after_exhausting_retries():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500)
+
+    with pytest.raises(WebhookDeliveryError):
+        deliver_webhook(
+            "https://hook.example/ingest",
+            build_event("inbox", "INBOX", {"uid": "18"}),
+            attempts=3,
+            transport=httpx.MockTransport(handler),
+            sleep=lambda _seconds: None,
+        )
+    assert calls["n"] == 3
+
+
+def test_deliver_webhook_does_not_retry_client_error():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(404)
+
+    with pytest.raises(WebhookDeliveryError):
+        deliver_webhook(
+            "https://hook.example/ingest",
+            build_event("inbox", "INBOX", {"uid": "18"}),
+            attempts=5,
+            transport=httpx.MockTransport(handler),
+            sleep=lambda _seconds: None,
+        )
+    assert calls["n"] == 1  # a 4xx is a configuration problem, not worth retrying
+
+
+def test_run_watch_holds_cursor_when_delivery_fails(tmp_path):
+    FakeIMAP.search_uids = b"18 19"
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+    store = CursorStore.load(tmp_path / "state.json")
+    store.set("INBOX", cursor_uid=17, uid_validity=7)
+    delivered: list[str] = []
+
+    def failing_sink(event: dict) -> None:
+        if event["message"]["uid"] == "19":
+            raise RuntimeError("receiver is down")
+        delivered.append(event["message"]["uid"])
+
+    count = run_watch(
+        settings(watch_webhook_url="https://hook.example/ingest"),
+        rules=[WatchRule(name="INBOX", folder="INBOX")],
+        client=client,
+        store=store,
+        once=True,
+        sink=failing_sink,
+    )
+
+    assert delivered == ["18"]
+    assert count == 1
+    # 18 was accepted so the cursor advances to 18; 19 failed and is retried next cycle.
+    assert store.get("INBOX") == (18, 7)
 
 
 def test_deliver_webhook_signs_and_posts():
