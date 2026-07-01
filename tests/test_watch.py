@@ -575,9 +575,12 @@ def test_replay_dead_letter_missing_file_is_noop(tmp_path):
 
 def test_replay_dead_letter_preserves_unparseable_lines(tmp_path):
     dl = tmp_path / "dead-letter.jsonl"
-    dl.write_text("not json\n" + json.dumps(
-        {"rule": "INBOX", "source": "mail", "event": build_event("INBOX", "INBOX", {"uid": "18"})}
-    ) + "\n", encoding="utf-8")
+    dl.write_text(
+        "not json\n"
+        + json.dumps({"rule": "INBOX", "source": "mail", "event": build_event("INBOX", "INBOX", {"uid": "18"})})
+        + "\n",
+        encoding="utf-8",
+    )
 
     summary = replay_dead_letter(settings(), path=dl, rules=[WatchRule(name="INBOX")], sink=lambda event: None)
 
