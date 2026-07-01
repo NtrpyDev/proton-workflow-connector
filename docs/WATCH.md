@@ -5,10 +5,10 @@ anything to happen. This connector adds a **trigger layer** so new activity can 
 your stack. Because Proton and SimpleLogin have no public push API, the watcher polls on an interval
 and emits one event per new item. There are two ways to consume those events:
 
-- **Push** — `proton-workflow-watch` runs a loop and delivers each event to a target: a webhook
+- Push: `proton-workflow-watch` runs a loop and delivers each event to a target: a webhook
   (n8n, Zapier, Make, a serverless function, your own service), an appended JSONL file, or an
   external command.
-- **Pull** — the `poll_mailbox` MCP tool returns everything new since the last call, so an agent can
+- Pull: the `poll_mailbox` MCP tool returns everything new since the last call, so an agent can
   build "when new mail matching X arrives, do Y" without a background process.
 
 Both share the same cursor logic, so they never replay history and never miss activity across
@@ -103,15 +103,15 @@ stacks).
 }
 ```
 
-A top-level array (without the `rules` wrapper) is also accepted. Rule names must be unique — they
-key the persisted cursor, so reusing a name would share a cursor.
+A top-level array (without the `rules` wrapper) is also accepted.
+Rule names must be unique because they key the persisted cursor; reusing a name would share a cursor.
 
 ## Rule actions: act, don't just notify
 
-A mail rule can carry an `actions` list. When it matches a message, the watcher runs those actions
-on it through the same IMAP client the tools use — so the connector becomes the server-side filters
-Bridge doesn't expose. A rule can act, notify (a sink), or both; a rule with actions and no delivery
-target just acts.
+A mail rule can carry an `actions` list.
+When it matches a message, the watcher runs those actions through the same IMAP client the tools use.
+That gives you server-side filtering behavior even though Bridge does not expose Proton filters.
+A rule can act, notify a sink, or both; a rule with actions and no delivery target just acts.
 
 ```json
 {
@@ -133,9 +133,9 @@ Use `--dry-run` after editing rules. It polls once and logs the events and actio
 but it does not deliver to sinks, run actions, or write cursor state.
 
 Ordering is chosen for reliability under at-least-once delivery: flag/label actions run first, then
-the sink delivers, then moves run (so a delivery failure can never move the message out from under a
-retry), and `forward` runs last from the message's final folder. **`forward` is at-least-once** — if
-a later step fails and the event retries, a forward can fire twice, so keep it for cases where a
+the sink delivers, then moves run, so a delivery failure can never move the message out from under a
+retry. `forward` runs last from the message's final folder. **`forward` is at-least-once**: if a
+later step fails and the event retries, a forward can fire twice, so keep it for cases where a
 duplicate is tolerable. Only one move-type action (`archive`/`trash`/`move`) per rule.
 
 ## Low-latency triggers with IMAP IDLE
@@ -149,11 +149,11 @@ and other folders are still polled at the interval on each wake, so IDLE mainly 
 
 `PROTON_MCP_WATCH_SINK` (or `--sink`) selects where events go. Webhook stays the default.
 
-- **`webhook`** — POSTs JSON to `PROTON_MCP_WATCH_WEBHOOK_URL` (or a rule's `webhook_url`), with the
+- `webhook`: POSTs JSON to `PROTON_MCP_WATCH_WEBHOOK_URL` (or a rule's `webhook_url`), with the
   optional HMAC signature. Retried with backoff; see *Delivery guarantees* below.
-- **`file`** — appends each event as one JSON line to `PROTON_MCP_WATCH_FILE`. Good for piping into
+- `file`: Appends each event as one JSON line to `PROTON_MCP_WATCH_FILE`. Good for piping into
   `tail -f`, a log shipper, or batch jobs.
-- **`command`** — runs `PROTON_MCP_WATCH_COMMAND` once per event with the event JSON on stdin. A
+- `command`: Runs `PROTON_MCP_WATCH_COMMAND` once per event with the event JSON on stdin. A
   non-zero exit is treated as a failed delivery (so retry/dead-letter logic applies). The command is
   split with shell-like tokenization and executed directly (no shell), e.g.
   `--command "/usr/local/bin/notify --queue proton"`.
@@ -251,8 +251,8 @@ Compute the HMAC over the exact bytes you received, before any JSON re-serializa
 Push delivery is **at-least-once**. Transient failures (a network error, HTTP 429, or any 5xx) are
 retried with exponential backoff up to `PROTON_MCP_WATCH_MAX_RETRIES`. If an event still cannot be
 delivered, the watcher holds the cursor at the last accepted message and retries the rest on the next
-poll instead of advancing past — so a webhook outage delays events rather than dropping them. A 4xx
-other than 429 is treated as a configuration error and is not retried.
+poll. A webhook outage delays events; it does not drop them. A 4xx other than 429 is treated as a
+configuration error and is not retried.
 
 Because delivery is at-least-once, a receiver can see the same event twice after a partial failure.
 Deduplicate on `message.message_id` (or `folder` + `message.uid`) if your workflow is not idempotent.
@@ -276,7 +276,7 @@ poll_aliases(query="shop", cursor_name="shop-aliases")
 ```
 
 It baselines to the current highest alias id on first call, then returns only aliases created since
-the previous call for that `cursor_name` — the pull-side equivalent of the `simplelogin_alias`
+the previous call for that `cursor_name`. This is the pull-side equivalent of the `simplelogin_alias`
 watcher source.
 
 ## Security and trust model
@@ -285,7 +285,7 @@ The watcher runs on your machine with your Bridge credentials, and the command s
 program per event, so a few boundaries are worth stating plainly:
 
 - **The command sink runs a program you choose.** It comes only from `PROTON_MCP_WATCH_COMMAND` or
-  `--command` — never from a rules file. The event JSON is written to that program's standard input,
+  `--command`, never from a rules file. The event JSON is written to that program's standard input,
   not spliced into its command line, so a crafted email subject or alias name can't inject arguments.
   It runs without a shell, so there's no shell expansion to worry about.
 - **A rules file is trusted configuration.** Its per-rule `webhook_url` decides where events go and
@@ -293,8 +293,8 @@ program per event, so a few boundaries are worth stating plainly:
   like a config secret: don't load one from a source you don't control.
 - **Events carry attacker-influenced content.** Anyone can email you a subject line or create an
   alias name, and that text ends up in the event payload. Mail message payloads include
-  `content_trust: "untrusted"` for this reason. Whatever consumes the event — your webhook receiver,
-  log pipeline, or command — should treat event fields as data, not instructions.
+  `content_trust: "untrusted"` for this reason. Your webhook receiver, log pipeline, or command
+  should treat event fields as data, not instructions.
 
 ## Limitations
 

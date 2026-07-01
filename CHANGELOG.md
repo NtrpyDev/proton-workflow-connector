@@ -2,7 +2,7 @@
 
 All notable changes to this project are recorded here. Versions follow [semantic versioning](https://semver.org/).
 
-## 1.2.0 — 2026-07-01
+## 1.2.0 - 2026-07-01
 
 ### Added
 
@@ -28,7 +28,7 @@ All notable changes to this project are recorded here. Versions follow [semantic
 - Watcher rules that combine a move action with `forward` are rejected at parse time because retries
   cannot reliably forward a message after its UID changes.
 
-## 1.1.0 — 2026-07-01
+## 1.1.0 - 2026-07-01
 
 Turns the watcher into a real workflow layer: more event sources, flexible delivery, and reliable
 forward progress.

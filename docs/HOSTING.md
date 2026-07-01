@@ -1,6 +1,7 @@
 # Hosted HTTP setup
 
-Use this guide when the MCP endpoint must be reachable from another machine. One running server connects to one Proton Bridge account.
+Use this guide when the MCP endpoint must be reachable from another machine.
+One running server connects to one Proton Bridge account.
 
 ## Localhost
 
@@ -13,7 +14,9 @@ proton-workflow-connector --transport streamable-http --host 127.0.0.1 --port 87
 
 ## Private LAN
 
-Non-local HTTP requires an allowed Host value. OAuth remains the recommended choice. A trusted private network can opt out explicitly:
+Non-local HTTP requires an allowed Host value.
+OAuth remains the recommended choice.
+A trusted private network can opt out explicitly:
 
 ```dotenv
 PROTON_MCP_HTTP_ALLOWED_HOSTS=192.0.2.10:8765
@@ -80,9 +83,11 @@ systemctl --user daemon-reload
 systemctl --user enable --now protonmail-bridge-headless.service proton-workflow-connector.service
 ```
 
-The MCP example binds to localhost for use behind an HTTPS proxy. Change the environment filename if your private file is not `~/.config/proton-workflow-connector/env`.
+The MCP example binds to localhost for use behind an HTTPS proxy.
+Change the environment filename if your private file is not `~/.config/proton-workflow-connector/env`.
 
-The Bridge unit includes an explicit `flatpak kill` stop action. Flatpak runs Bridge in a separate application scope, so this line is needed for `systemctl --user restart protonmail-bridge-headless.service` to replace the actual Bridge process.
+The Bridge unit includes an explicit `flatpak kill` stop action.
+Flatpak runs Bridge in a separate application scope, so `systemctl --user restart protonmail-bridge-headless.service` needs that line to replace the actual Bridge process.
 
 ## Secrets and logs
 

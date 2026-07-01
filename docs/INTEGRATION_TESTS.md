@@ -25,7 +25,9 @@ Do not commit logs, message bodies, screenshots, mailbox exports, or Bridge note
 
 ### Automated live workflow
 
-The live workflow creates folders and drafts, sends test messages, exercises message actions, and permanently removes data carrying its unique test marker. Use a recipient mailbox you control. The recipient must not be one of the configured sender addresses if `reply_all` is expected to have a recipient.
+The live workflow creates folders and drafts, sends test messages, exercises message actions, and permanently removes data carrying its unique test marker.
+Use a recipient mailbox you control.
+The recipient must not be one of the configured sender addresses if `reply_all` is expected to have a recipient.
 
 ```bash
 python scripts/live_bridge_workflow.py \
@@ -34,7 +36,8 @@ python scripts/live_bridge_workflow.py \
   --recipient controlled-test-mailbox@example.com
 ```
 
-Do not run this script where automatic test-data cleanup is unacceptable. It never empties a folder, but it permanently deletes messages containing its generated `MCP-v1-live-...` marker.
+Do not run this script where automatic test-data cleanup is unacceptable.
+It never empties a folder, but it permanently deletes messages containing its generated `MCP-v1-live-...` marker.
 
 ## SimpleLogin
 
@@ -50,6 +53,7 @@ Use a disposable alias and run this sequence:
 
 - Claude Code: add the local stdio server and verify `/mcp`.
 - Codex direct MCP: add the config and verify the tools list.
+- Generic MCP clients: verify either the stdio command or the localhost HTTP URL.
 - Codex plugin: install from the plugin wrapper and confirm the MCP server is visible.
 
 ## Hosted HTTP

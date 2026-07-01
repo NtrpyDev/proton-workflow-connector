@@ -30,7 +30,8 @@ chmod 600 ~/.config/proton-workflow-connector/env
 
 Replace the example values with the details from Bridge. Keep this file out of Git.
 
-Set `PROTON_BRIDGE_EMAIL` to the default sender. If the account has additional Proton or custom-domain addresses, list every allowed sender in `PROTON_BRIDGE_SENDER_ADDRESSES`, separated by commas.
+Set `PROTON_BRIDGE_EMAIL` to the default sender.
+If the account has additional Proton or custom-domain addresses, list every allowed sender in `PROTON_BRIDGE_SENDER_ADDRESSES`, separated by commas.
 
 ## 3. Install and run the server
 
@@ -65,5 +66,5 @@ Set `SIMPLELOGIN_API_KEY` only if you want the SimpleLogin tools. Leave it unset
 ## 6. Choose the network mode
 
 - Use stdio when the MCP client and server run on the same machine.
-- Use localhost HTTP when a local client requires HTTP.
+- Use localhost HTTP when a local client or locally hosted agent requires a URL.
 - Read [HOSTING.md](HOSTING.md) before binding HTTP to a LAN address or public hostname.

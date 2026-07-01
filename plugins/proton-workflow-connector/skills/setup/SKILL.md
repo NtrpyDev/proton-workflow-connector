@@ -12,6 +12,7 @@ Rules:
 - Keep all setup generic. Do not add personal mailbox examples, private IPs, local usernames, Bridge passwords, SimpleLogin API keys, message bodies, screenshots, or logs to the repo.
 - Remind the user this connector is unofficial and not affiliated with Proton AG.
 - Prefer local stdio unless the user explicitly needs Streamable HTTP.
+- For locally hosted agents that support MCP, use stdio first and localhost HTTP when the client needs a URL.
 - For remote HTTP, follow `docs/HOSTING.md` and require HTTPS, OAuth, Host/Origin validation, and network controls.
 - Use `list_folders` first to verify account folder names before moving, trashing, or archiving messages.
 - Treat `permanently_delete_message` as destructive and require explicit user intent.

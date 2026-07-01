@@ -5,35 +5,36 @@
 [![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-A self-hosted Model Context Protocol (MCP) connector for reading, sending, organizing, and automating Proton Mail through Proton Mail Bridge, with optional SimpleLogin alias management.
+Proton Workflow Connector (PWC) is a self-hosted Model Context Protocol (MCP) connector for reading, sending, organizing, and automating Proton Mail through Proton Mail Bridge.
+It works with any MCP client or local agent runtime that can launch a stdio server or call a Streamable HTTP MCP endpoint.
+SimpleLogin support is optional.
 
-This is an unofficial project. It is not affiliated with, endorsed by, or sponsored by Proton AG. The connector uses Bridge-generated IMAP/SMTP credentials; it does not accept Proton account passwords or store Proton login sessions.
+This is an unofficial project. It is not affiliated with, endorsed by, or sponsored by Proton AG.
+The connector uses Bridge-generated IMAP/SMTP credentials. It does not accept Proton account passwords or store Proton login sessions.
 
-[Quick start](#quick-start) · [Example workflows](#example-workflows) · [Capabilities](#capabilities) · [Automations](#automations) · [Security](#security-model) · [Documentation](#documentation)
+[Quick start](#quick-start) · [Example workflows](#example-workflows) · [Capabilities](#capabilities) · [Automations](#automations) · [Security](#security-model) · [Documentation](#documentation) · [Buy Me a Coffee](https://buymeacoffee.com/ntrpydev)
 
 ## Why use it?
 
-- **One mail workflow:** search, read, send, reply, forward, draft, label, archive, and manage attachments through 53 Proton Mail tools.
-- **Agent-aware safeguards:** destructive tools require explicit confirmation, dry-run previews are available for sends and destructive operations, outbound HTML is sanitized by default, bulk operations are bounded, and sender addresses are allowlisted.
-- **Real automations:** react to new mail or SimpleLogin aliases through MCP polling or a background watcher with webhook, JSONL, or command delivery.
-- **Optional SimpleLogin support:** manage aliases, contacts, and mailboxes through 13 additional tools.
-- **Local-first or hosted:** connect over stdio, localhost Streamable HTTP, or OAuth-protected hosted HTTP.
+Use one local server for the mail work agents usually have to piece together:
+
+- Search, read, send, reply, forward, draft, label, archive, and download attachments through 53 Proton Mail tools.
+- Require confirmation for destructive tools, preview sends and destructive operations with `dry_run`, sanitize outbound HTML by default, bound bulk operations, and allow only configured sender addresses.
+- React to new mail or SimpleLogin aliases through MCP polling or a background watcher that can call a webhook, append JSONL, or run a command.
+- Add 13 SimpleLogin tools when you want alias, contact, and mailbox management.
+- Connect over stdio, localhost Streamable HTTP, or OAuth-protected hosted HTTP.
 
 The server exposes 67 tools in total. See the [complete tool reference](docs/TOOLS.md).
 
 ## How it works
 
-```mermaid
-flowchart LR
-    Client["MCP client<br/>Codex, Claude Code, or another client"] -->|"stdio or Streamable HTTP"| Connector["Proton Workflow Connector"]
-    Connector -->|"local IMAP/SMTP"| Bridge["Proton Mail Bridge"]
-    Connector -.->|"optional HTTPS API"| SimpleLogin["SimpleLogin"]
-    Watcher["Background watcher"] -->|"local IMAP"| Bridge
-    Watcher -.->|"optional HTTPS API"| SimpleLogin
-    Watcher -->|"webhook, JSONL, or command"| Automation["Automation stack"]
-```
+PWC is an MCP server. Your client starts it over stdio or connects to it over Streamable HTTP.
 
-Proton Mail Bridge must be installed, signed in, and running on the same machine as the connector. One connector process serves one Bridge account.
+The connector talks to Proton Mail Bridge over local IMAP/SMTP. Bridge must be installed, signed in, and running on the same machine as the connector. One connector process serves one Bridge account.
+
+SimpleLogin is optional. If `SIMPLELOGIN_API_KEY` is set, PWC adds alias, contact, mailbox, and new-alias polling tools. If it is unset, the Proton Mail tools still work.
+
+For automation, run `proton-workflow-watch` or call the polling tools from your MCP client. Watcher output can go to a webhook, a JSONL file, or a command.
 
 ## Quick start
 
@@ -77,7 +78,12 @@ proton-workflow-connector --transport stdio \
 
 ### 4. Connect an MCP client
 
-For Claude Code:
+Any MCP client or local agent runtime can use PWC as long as it supports stdio or Streamable HTTP:
+
+- stdio: run `proton-workflow-connector --transport stdio --env-file ...`
+- HTTP: run the connector with `--transport streamable-http` and point the client at `/mcp`
+
+Claude Code stdio example:
 
 ```bash
 claude mcp add --transport stdio --scope user proton-workflow \
@@ -85,7 +91,7 @@ claude mcp add --transport stdio --scope user proton-workflow \
   --env-file ~/.config/proton-workflow-connector/env
 ```
 
-For Codex, add this to `~/.codex/config.toml` and use absolute paths:
+Codex stdio example:
 
 ```toml
 [mcp_servers.proton_workflow]
@@ -99,21 +105,22 @@ startup_timeout_sec = 20
 tool_timeout_sec = 120
 ```
 
-Run the `server_status` tool after connecting. It checks IMAP, SMTP, SimpleLogin, OAuth configuration, and the server version without returning secrets. Then run `list_folders`; Bridge folder names vary by account and version.
+Run `server_status` after connecting. It checks IMAP, SMTP, SimpleLogin, OAuth configuration, and the server version without returning secrets.
+Then run `list_folders`; Bridge folder names vary by account and version.
 
-See [MCP client setup](docs/CLIENTS.md) for more configurations, including localhost and hosted Streamable HTTP.
+See [MCP client setup](docs/CLIENTS.md) for generic client configuration, localhost HTTP, hosted Streamable HTTP, Codex, Claude Code, and the plugin wrapper.
 
 ## Example workflows
 
 Once connected, ask your MCP client to:
 
-- “List my mail folders and show the unread count for each.”
-- “Find unread invoices from the last 30 days without marking them read.”
-- “Draft—but do not send—a reply to the latest message in this thread.”
-- “Download the PDF attachments from this message.”
-- “Archive these message UIDs after showing me the exact list.”
-- “Create a SimpleLogin alias for shopping and add a contact for this merchant.”
-- “Poll for new mail from `billing@vendor.example` using the `invoices` cursor.”
+- "List my mail folders and show the unread count for each."
+- "Find unread invoices from the last 30 days without marking them read."
+- "Draft a reply to the latest message in this thread, but do not send it."
+- "Download the PDF attachments from this message."
+- "Archive these message UIDs after showing me the exact list."
+- "Create a SimpleLogin alias for shopping and add a contact for this merchant."
+- "Poll for new mail from `billing@vendor.example` using the `invoices` cursor."
 
 The connector returns structured data to the MCP client. The client decides how to present it and when to request approval for actions.
 
@@ -187,11 +194,10 @@ Read [SECURITY.md](SECURITY.md) before using real mail and [Hosted HTTP setup](d
 | --- | --- |
 | [Setup](docs/SETUP.md) | Bridge configuration, private environment files, folder names, and network modes |
 | [Tool reference](docs/TOOLS.md) | All 67 MCP tools, arguments, safety limits, and boundaries |
-| [Client setup](docs/CLIENTS.md) | Codex, Claude Code, plugin, and Streamable HTTP configuration |
+| [Client setup](docs/CLIENTS.md) | Generic MCP clients, local agents, Codex, Claude Code, plugins, and Streamable HTTP |
 | [Triggers and webhooks](docs/WATCH.md) | Watcher rules, payloads, delivery behavior, and signature verification |
 | [Hosted HTTP](docs/HOSTING.md) | OAuth/OIDC, HTTPS, Host/Origin validation, scopes, audit logs, and systemd |
 | [Integration tests](docs/INTEGRATION_TESTS.md) | Live Bridge and SimpleLogin verification |
-| [Release checklist](docs/RELEASE_CHECKLIST.md) | Maintainer release procedure |
 
 Official upstream references:
 

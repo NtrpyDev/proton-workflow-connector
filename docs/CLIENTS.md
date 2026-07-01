@@ -1,6 +1,33 @@
 # MCP client setup
 
-This connector is self-hosted. Use local stdio unless the MCP client needs an HTTP endpoint.
+Proton Workflow Connector (PWC) is self-hosted. Use local stdio when the client and connector run on the same machine.
+Use Streamable HTTP when the client needs a URL.
+
+Any MCP client or local agent runtime can use PWC if it can launch an MCP stdio server or call a Streamable HTTP MCP endpoint.
+
+## Generic MCP clients and local agents
+
+For stdio clients, configure this server command:
+
+```bash
+proton-workflow-connector --transport stdio \
+  --env-file ~/.config/proton-workflow-connector/env
+```
+
+For HTTP clients, start the server on localhost:
+
+```bash
+proton-workflow-connector --transport streamable-http --host 127.0.0.1 --port 8765 \
+  --env-file ~/.config/proton-workflow-connector/env
+```
+
+Then point the client at:
+
+```text
+http://127.0.0.1:8765/mcp
+```
+
+Keep HTTP on localhost unless you have completed [HOSTING.md](HOSTING.md).
 
 ## Claude Code
 
@@ -15,7 +42,9 @@ claude mcp add --transport stdio --scope user proton-workflow \
 
 Use `/mcp` in Claude Code to inspect the connection.
 
-For `claude.ai/code` Remote Control, verify the local connection with `/mcp` first. Then start the Remote Control session and try a read-only request such as listing folders. Bridge must stay running on the same machine as the MCP server.
+For `claude.ai/code` Remote Control, verify the local connection with `/mcp` first.
+Then start the Remote Control session and try a read-only request such as listing folders.
+Bridge must stay running on the same machine as the MCP server.
 
 For an HTTP connection:
 
@@ -80,7 +109,7 @@ The wrapper contains no credentials or personal marketplace configuration. Insta
 
 For local testing, copy the plugin directory into a Codex marketplace source or include it in a repo marketplace. Keep any private marketplace file or private env file out of public git history.
 
-## Other Streamable HTTP clients
+## Other HTTP clients
 
 Run the server:
 
