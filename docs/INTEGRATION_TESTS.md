@@ -2,6 +2,29 @@
 
 These checks use live local services, so CI does not run them.
 
+## Live acceptance harness
+
+`scripts/live_acceptance.py` automates almost everything below: it runs marker-scoped suites
+(`bridge`, `simplelogin`, `watch`, `safety`, `oauth`, or `all`) against a live server, covers
+all 67 tools with a coverage matrix, and cleans up after itself. Destructive steps only ever
+touch data carrying the run's unique `PWC-live-...` marker.
+
+```bash
+python scripts/live_acceptance.py all \
+  --url http://127.0.0.1:8766/mcp \
+  --sender sender@example.com \
+  --recipient controlled-test-mailbox@example.com \
+  --env-file ~/.config/proton-workflow-connector/test.env \
+  --fixture-url https://your-test-fixture.workers.dev \
+  --mint-secret <MINT_SECRET> --webhook-secret <any-string>
+```
+
+The `watch`, `safety`, and `oauth` suites need the disposable OIDC-issuer/webhook-receiver
+Worker in `tests/fixtures/worker/` (deploy instructions in its README). Checks that the
+environment cannot support are reported as `environment-incomplete`, never as passes.
+`scripts/lan_transport_check.py` covers the remote-transport rows (LAN and hosted HTTPS)
+from a second machine.
+
 ## Proton Mail Bridge
 
 1. Start Proton Mail Bridge.

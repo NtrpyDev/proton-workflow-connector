@@ -47,3 +47,7 @@ deploy.local.*
 # Local work-order, not part of the project
 AGENT_BRIEF.md
 HANDOFF.md
+TEST_PLAN.md
+
+# Wrangler local state for the test fixture worker
+.wrangler/

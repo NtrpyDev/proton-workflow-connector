@@ -1,0 +1,29 @@
+// Test fixture Worker: disposable OIDC issuer + webhook receiver for the live acceptance suite.
+// Deploy: npx wrangler deploy   (after setting the secrets listed in README.md)
+{
+  "name": "pwc-test-fixture",
+  "main": "src/index.js",
+  "compatibility_date": "2026-07-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "WEBHOOK_LOG",
+        "class_name": "WebhookLog"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": ["WebhookLog"]
+    }
+  ]
+  // After picking the zone, route the issuer hostname here, e.g.:
+  // "routes": [{ "pattern": "pwc-issuer-test.noahstorey.com", "custom_domain": true }]
+  // Until then the workers.dev URL works fine — the issuer value follows the request origin.
+}
