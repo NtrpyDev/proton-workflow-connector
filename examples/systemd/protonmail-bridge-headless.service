@@ -1,0 +1,16 @@
+[Unit]
+Description=Proton Mail Bridge headless daemon
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/flatpak run --command=/app/lib/protonmail/bridge/bridge ch.protonmail.protonmail-bridge --noninteractive --log-level info
+ExecStop=-/usr/bin/flatpak kill ch.protonmail.protonmail-bridge
+Restart=always
+RestartSec=10
+TimeoutStopSec=15
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

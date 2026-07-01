@@ -1,0 +1,10 @@
+title = "Proton Mail MCP secret scan"
+
+[allowlist]
+description = "Allow documented fake placeholder values only."
+regexes = [
+  '''replace-with-[a-z-]+''',
+  '''user@example\.com''',
+  '''alice@example\.com''',
+  '''bob@example\.com''',
+]

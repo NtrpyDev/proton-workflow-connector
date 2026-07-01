@@ -1,0 +1,26 @@
+[mcp_servers.proton_workflow]
+command = "proton-workflow-connector"
+args = ["--transport", "stdio"]
+env_vars = [
+  "PROTON_BRIDGE_IMAP_HOST",
+  "PROTON_BRIDGE_IMAP_PORT",
+  "PROTON_BRIDGE_IMAP_TLS",
+  "PROTON_BRIDGE_SMTP_HOST",
+  "PROTON_BRIDGE_SMTP_PORT",
+  "PROTON_BRIDGE_SMTP_TLS",
+  "PROTON_BRIDGE_ALLOW_INSECURE_TLS",
+  "PROTON_BRIDGE_USERNAME",
+  "PROTON_BRIDGE_PASSWORD",
+  "PROTON_BRIDGE_EMAIL",
+  "PROTON_BRIDGE_SENDER_ADDRESSES",
+  "PROTON_ARCHIVE_FOLDER",
+  "PROTON_TRASH_FOLDER",
+  "PROTON_DRAFTS_FOLDER",
+  "PROTON_SENT_FOLDER",
+  "PROTON_SPAM_FOLDER",
+  "SIMPLELOGIN_API_KEY",
+  "SIMPLELOGIN_BASE_URL"
+]
+default_tools_approval_mode = "prompt"
+startup_timeout_sec = 20
+tool_timeout_sec = 120

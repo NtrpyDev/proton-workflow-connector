@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+dist/
+build/
+.venv/
+venv/
+
+# Local secrets and private config
+.env
+.env.*
+!.env.example
+*.local
+local-config/
+private/
+private-notes/
+bridge-notes*
+proton-bridge*
+*.pem
+*.key
+*.crt
+*.p12
+
+# Logs, caches, and mailbox artifacts
+*.log
+logs/
+cache/
+tmp/
+*.mbox
+*.eml
+*.maildir/
+mail-export/
+screenshots/
+
+# Local deployment files
+docker-compose.override.yml
+deploy.local.*
+.codex/config.toml
+.claude/settings.local.json
