@@ -1,6 +1,6 @@
 # Tool reference
 
-This connector exposes 59 MCP tools: 46 for Proton Mail through Bridge, 12 for SimpleLogin, and one status tool.
+This connector exposes 60 MCP tools: 46 for Proton Mail through Bridge, 13 for SimpleLogin, and one status tool.
 
 ## Folders
 
@@ -23,7 +23,10 @@ This connector exposes 59 MCP tools: 46 for Proton Mail through Bridge, 12 for S
 
 ## Triggers
 
-- `poll_mailbox`: Return messages that arrived since the last call, using a persistent per-cursor UID position. The first call for a cursor baselines to the current mailbox head and returns nothing, so you only ever receive genuinely new mail. Pass a stable `cursor_name` to track several independent triggers over one folder. This is the tool an agent uses to build "when new mail matching X arrives, do Y" loops. For background push delivery to a webhook, see [WATCH.md](WATCH.md).
+- `poll_mailbox`: Return messages that arrived since the last call, using a persistent per-cursor UID position. The first call for a cursor baselines to the current mailbox head and returns nothing, so you only ever receive genuinely new mail. Pass a stable `cursor_name` to track several independent triggers over one folder. This is the tool an agent uses to build "when new mail matching X arrives, do Y" loops.
+- `poll_aliases`: The SimpleLogin counterpart of `poll_mailbox`. Return aliases created since the last call, using a persistent cursor on the highest alias id. The first call baselines and returns nothing; later calls return only new aliases. `query` matches a substring of the alias email. Requires `SIMPLELOGIN_API_KEY`.
+
+For background push delivery to a webhook, file, or command, see [WATCH.md](WATCH.md).
 
 ## Sending and drafts
 
@@ -71,6 +74,7 @@ Bulk tools require explicit numeric UIDs and are capped by `PROTON_MCP_BULK_LIMI
 - `simplelogin_delete_alias`: Delete an alias after `confirm=true`.
 - `simplelogin_list_alias_contacts` and `simplelogin_create_alias_contact`
 - `simplelogin_list_mailboxes`
+- `poll_aliases`: New-alias trigger, described under [Triggers](#triggers) above.
 
 SimpleLogin tools require `SIMPLELOGIN_API_KEY`. The rest of the server works without it.
 

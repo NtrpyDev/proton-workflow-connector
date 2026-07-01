@@ -14,25 +14,29 @@ This project is not affiliated with, endorsed by, or sponsored by Proton AG. Eac
 - Use any sending address explicitly allowed in the private configuration.
 - Manage SimpleLogin aliases, contacts, and mailboxes with an optional API key.
 - Connect over local stdio, private HTTP, or OAuth-protected hosted HTTP.
-- **Trigger on new mail** and push it to the rest of your stack. A background watcher polls Bridge
-  and POSTs signed webhook events to n8n, Zapier, Make, or your own service, and the `poll_mailbox`
-  tool lets agents pull "what's new since last time" on demand. See [docs/WATCH.md](docs/WATCH.md).
+- **Trigger on new mail and new SimpleLogin aliases** and push the events to the rest of your stack.
+  A background watcher delivers each event to a webhook (n8n, Zapier, Make, or your own service), a
+  JSONL file, or a command, and the `poll_mailbox` and `poll_aliases` tools let agents pull "what's
+  new since last time" on demand. See [docs/WATCH.md](docs/WATCH.md).
 
-The server exposes 59 tools. [docs/TOOLS.md](docs/TOOLS.md) describes each one. Proton Contacts are not included because Bridge does not expose them.
+The server exposes 60 tools. [docs/TOOLS.md](docs/TOOLS.md) describes each one. Proton Contacts are not included because Bridge does not expose them.
 
 ## Triggers and automations
 
-Beyond request/response tools, the connector can react to new mail. Point it at a webhook and it
-delivers an event per new message, with an HMAC signature so the receiver can verify authenticity:
+Beyond request/response tools, the connector can react to new activity. Point the watcher at a
+webhook and it delivers one event per new message or alias, with an HMAC signature so the receiver
+can verify it:
 
 ```bash
 proton-workflow-watch --env-file ~/.config/proton-workflow-connector/env \
   --folder INBOX --webhook-url https://example.com/hooks/proton --interval 60
 ```
 
-Cursors are UIDVALIDITY-aware and persisted, so the watcher baselines on first run (no backlog
-flood) and never replays or drops mail across restarts. Full setup, payload shape, and signature
-verification are in [docs/WATCH.md](docs/WATCH.md).
+Cursors are persisted (and UIDVALIDITY-aware for mail), so the watcher baselines on first run — no
+backlog flood — and never replays or drops events across restarts. A JSON rules file drives several
+named triggers at once, delivery can go to a webhook, a file, or a command, and an event that keeps
+failing lands in a dead-letter file instead of stalling the source. Setup, event payloads, signature
+verification, and the trust model are in [docs/WATCH.md](docs/WATCH.md).
 
 ## Installation
 

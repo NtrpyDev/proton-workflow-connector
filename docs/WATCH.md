@@ -230,6 +230,21 @@ It baselines to the current highest alias id on first call, then returns only al
 the previous call for that `cursor_name` — the pull-side equivalent of the `simplelogin_alias`
 watcher source.
 
+## Security and trust model
+
+The watcher runs on your machine with your Bridge credentials, and the command sink can run a
+program per event, so a few boundaries are worth stating plainly:
+
+- **The command sink runs a program you choose.** It comes only from `PROTON_MCP_WATCH_COMMAND` or
+  `--command` — never from a rules file. The event JSON is written to that program's standard input,
+  not spliced into its command line, so a crafted email subject or alias name can't inject arguments.
+  It runs without a shell, so there's no shell expansion to worry about.
+- **A rules file is trusted configuration.** Its per-rule `webhook_url` decides where events go, so
+  treat a rules file like a config secret: don't load one from a source you don't control.
+- **Events carry attacker-influenced content.** Anyone can email you a subject line or create an
+  alias name, and that text ends up in the event payload. Whatever consumes the event — your webhook
+  receiver, log pipeline, or command — should treat event fields as untrusted input.
+
 ## Limitations
 
 - **Polling, not push.** Proton exposes no webhooks, so latency is bounded by your interval. Lower
