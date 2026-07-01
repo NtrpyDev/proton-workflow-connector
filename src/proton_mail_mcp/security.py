@@ -73,6 +73,7 @@ SIMPLELOGIN_POLICIES = {
     "user_info": OperationPolicy("simplelogin.read", "read"),
     "stats": OperationPolicy("simplelogin.read", "read"),
     "list_aliases": OperationPolicy("simplelogin.read", "read"),
+    "poll_aliases": OperationPolicy("simplelogin.read", "read"),
     "get_alias": OperationPolicy("simplelogin.read", "read"),
     "list_alias_contacts": OperationPolicy("simplelogin.read", "read"),
     "list_mailboxes": OperationPolicy("simplelogin.read", "read"),

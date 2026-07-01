@@ -21,6 +21,7 @@ from proton_mail_mcp.watch import (
     make_command_sink,
     make_file_sink,
     poll_rule,
+    replay_dead_letter,
     resolve_sink,
     run_watch,
     sign_payload,
@@ -525,3 +526,61 @@ def test_resolve_sink_errors_when_webhook_target_missing():
     st = settings(watch_sink="webhook")
     with pytest.raises(RuntimeError, match="No webhook URL"):
         resolve_sink(st, WatchRule(name="a"))
+
+
+# --- Dead-letter replay ---------------------------------------------------------------------
+
+
+def _write_dead_letter_file(path, events):
+    lines = []
+    for event in events:
+        lines.append(json.dumps({"rule": event["rule"], "source": "mail", "event": event, "attempts": 5}))
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_replay_dead_letter_redelivers_and_keeps_failures(tmp_path):
+    dl = tmp_path / "dead-letter.jsonl"
+    events = [build_event("INBOX", "INBOX", {"uid": "18"}), build_event("INBOX", "INBOX", {"uid": "19"})]
+    _write_dead_letter_file(dl, events)
+
+    def sink(event):
+        if event["message"]["uid"] == "19":
+            raise RuntimeError("still down")
+
+    summary = replay_dead_letter(settings(), path=dl, rules=[WatchRule(name="INBOX")], sink=sink)
+
+    assert summary["total"] == 2
+    assert summary["replayed"] == 1
+    assert summary["remaining"] == 1
+    # Only the still-failing event 19 is left in the file.
+    remaining = [json.loads(line) for line in dl.read_text(encoding="utf-8").strip().splitlines()]
+    assert [rec["event"]["message"]["uid"] for rec in remaining] == ["19"]
+
+
+def test_replay_dead_letter_removes_file_when_all_delivered(tmp_path):
+    dl = tmp_path / "dead-letter.jsonl"
+    _write_dead_letter_file(dl, [build_event("INBOX", "INBOX", {"uid": "18"})])
+
+    summary = replay_dead_letter(settings(), path=dl, rules=[WatchRule(name="INBOX")], sink=lambda event: None)
+
+    assert summary["replayed"] == 1
+    assert summary["remaining"] == 0
+    assert not dl.exists()  # nothing left, so the file is removed
+
+
+def test_replay_dead_letter_missing_file_is_noop(tmp_path):
+    summary = replay_dead_letter(settings(), path=tmp_path / "nope.jsonl", sink=lambda event: None)
+    assert summary == {"path": str(tmp_path / "nope.jsonl"), "total": 0, "replayed": 0, "remaining": 0}
+
+
+def test_replay_dead_letter_preserves_unparseable_lines(tmp_path):
+    dl = tmp_path / "dead-letter.jsonl"
+    dl.write_text("not json\n" + json.dumps(
+        {"rule": "INBOX", "source": "mail", "event": build_event("INBOX", "INBOX", {"uid": "18"})}
+    ) + "\n", encoding="utf-8")
+
+    summary = replay_dead_letter(settings(), path=dl, rules=[WatchRule(name="INBOX")], sink=lambda event: None)
+
+    assert summary["replayed"] == 1
+    # The valid record delivered and dropped; the unparseable line is kept, not lost.
+    assert dl.read_text(encoding="utf-8").strip().splitlines() == ["not json"]

@@ -181,6 +181,28 @@ def build_server(
         return result
 
     @mcp.tool()
+    def poll_aliases(
+        cursor_name: str | None = None,
+        query: str | None = None,
+        limit: int = 50,
+    ) -> dict:
+        """Return SimpleLogin aliases created since the last poll, for building triggers and automations.
+
+        The pull-side counterpart of the push watcher's ``simplelogin_alias`` source. Uses a persistent
+        cursor (the maximum alias id seen). The first call for a cursor baselines to the current highest
+        alias id and returns no aliases, so you only ever receive genuinely new aliases. ``query`` matches
+        a substring of the alias email. Pass a stable cursor_name to track several independent triggers.
+        """
+        name = cursor_name or "aliases"
+        store = _cursor_store()
+        last_id, _ = store.get(name)
+        result = simplelogin.poll_aliases(last_id=last_id, query=query, limit=limit)
+        store.set(name, cursor_uid=result["cursor_id"], uid_validity=None)
+        store.save()
+        result["cursor_name"] = name
+        return result
+
+    @mcp.tool()
     def read_mail(
         message_id: str, folder: str = "INBOX", mark_seen: bool = False, max_body_chars: int | None = None
     ) -> dict:

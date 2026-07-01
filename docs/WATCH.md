@@ -123,6 +123,16 @@ advances the cursor past it. The failure counter is persisted in the cursor stat
 correctly across restarts and `--once` cron invocations. Inspect or replay dead-lettered events from
 that file later.
 
+To retry parked events once the receiver is healthy again:
+
+```bash
+proton-workflow-watch --env-file … --sink webhook --replay-dead-letter
+```
+
+Replay re-delivers each event through the configured sink; events that succeed are dropped and any
+that still fail stay in the file for a later attempt. Delivery uses the *current* sink config (a
+rule's original per-rule `webhook_url` is not stored in the dead-letter record).
+
 Use `--once` to poll a single time and exit, which suits `cron` or a systemd timer. For a
 long-running service, see [`examples/systemd/proton-workflow-watch.service`](../examples/systemd/proton-workflow-watch.service).
 
@@ -209,6 +219,16 @@ poll_mailbox(folder="INBOX", unread=True, sender="billing@vendor.example", curso
 The first call baselines and returns no messages; each later call returns only mail that arrived
 since the previous call for that `cursor_name`. This is the building block for agent-driven
 automations ("check for new invoices, file them, reply") without polling loops in your own code.
+
+The `poll_aliases` tool is the SimpleLogin counterpart:
+
+```
+poll_aliases(query="shop", cursor_name="shop-aliases")
+```
+
+It baselines to the current highest alias id on first call, then returns only aliases created since
+the previous call for that `cursor_name` — the pull-side equivalent of the `simplelogin_alias`
+watcher source.
 
 ## Limitations
 

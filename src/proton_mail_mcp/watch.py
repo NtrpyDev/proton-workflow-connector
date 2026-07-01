@@ -340,6 +340,72 @@ def write_dead_letter(path: str | os.PathLike[str], record: Mapping[str, Any]) -
         os.close(descriptor)
 
 
+def _rewrite_dead_letter(path: Path, lines: list[str]) -> None:
+    """Atomically replace the dead-letter file with ``lines`` (removing it when empty)."""
+    if not lines:
+        path.unlink(missing_ok=True)
+        return
+    tmp = path.with_name(path.name + ".tmp")
+    descriptor = os.open(tmp, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+    try:
+        os.write(descriptor, ("\n".join(lines) + "\n").encode("utf-8"))
+    finally:
+        os.close(descriptor)
+    os.replace(tmp, path)
+
+
+def replay_dead_letter(
+    settings: Settings,
+    *,
+    path: str | os.PathLike[str] | None = None,
+    rules: Sequence[WatchRule] | None = None,
+    sink: Sink | None = None,
+    command_runner: Callable[[Sequence[str], bytes, float], tuple[int, str]] | None = None,
+) -> dict[str, Any]:
+    """Re-deliver events parked in the dead-letter file through the configured sink.
+
+    Events that deliver successfully are dropped; events that fail again are kept for a later retry,
+    and any unparseable lines are preserved rather than discarded. Delivery uses the CURRENT sink
+    configuration — a per-rule ``webhook_url`` from the original rule is not stored in the record, so
+    a matching rule is looked up from the active rules config when available. Returns a summary dict.
+    """
+    resolved = Path(path).expanduser() if path else default_dead_letter_path(settings)
+    if not resolved.exists():
+        return {"path": str(resolved), "total": 0, "replayed": 0, "remaining": 0}
+
+    rules = list(rules) if rules is not None else rules_from_config(settings)
+    rules_by_name = {rule.name: rule for rule in rules}
+
+    kept: list[str] = []
+    replayed = 0
+    total = 0
+    for raw in resolved.read_text(encoding="utf-8").splitlines():
+        if not raw.strip():
+            continue
+        try:
+            record = json.loads(raw)
+            event = record["event"]
+            rule_name = str(record.get("rule", ""))
+            source = str(record.get("source", SOURCE_MAIL))
+        except (json.JSONDecodeError, KeyError, TypeError):
+            kept.append(raw)  # preserve data we cannot parse instead of dropping it
+            continue
+        total += 1
+        rule = rules_by_name.get(rule_name) or WatchRule(name=rule_name or "dead-letter", source=source)
+        try:
+            target = resolve_sink(settings, rule, override=sink, command_runner=command_runner)
+            target(event)
+        except Exception as exc:
+            logger.error("Replay failed for rule %r; keeping in dead-letter: %s", rule_name, redact_text(str(exc)))
+            kept.append(raw)
+        else:
+            replayed += 1
+            logger.info("Replayed %s event for rule %r", event.get("type"), rule_name)
+
+    _rewrite_dead_letter(resolved, kept)
+    return {"path": str(resolved), "total": total, "replayed": replayed, "remaining": len(kept)}
+
+
 def poll_rule(
     client: BridgeMailClient | None,
     rule: WatchRule,
@@ -609,6 +675,12 @@ def main(argv: Sequence[str] | None = None) -> None:
     parser.add_argument("--command", help="Command to pipe each event to (stdin) for the command sink.")
     parser.add_argument("--dead-letter", dest="dead_letter", help="Dead-letter JSONL file path.")
     parser.add_argument(
+        "--replay-dead-letter",
+        dest="replay_dead_letter",
+        action="store_true",
+        help="Re-deliver parked dead-letter events through the configured sink, then exit.",
+    )
+    parser.add_argument(
         "--dead-letter-max-attempts",
         dest="dead_letter_max_attempts",
         type=int,
@@ -656,6 +728,17 @@ def main(argv: Sequence[str] | None = None) -> None:
         overrides["watch_state_path"] = args.state_path
     if overrides:
         settings = replace_settings(settings, **overrides)
+
+    if args.replay_dead_letter:
+        summary = replay_dead_letter(settings)
+        logger.info(
+            "Replayed %d of %d dead-letter event(s); %d remaining in %s",
+            summary["replayed"],
+            summary["total"],
+            summary["remaining"],
+            summary["path"],
+        )
+        return
 
     try:
         count = run_watch(settings, once=args.once)
