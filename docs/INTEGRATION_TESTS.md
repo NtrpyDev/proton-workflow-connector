@@ -46,7 +46,10 @@ from a second machine.
 
 Do not commit logs, message bodies, screenshots, mailbox exports, or Bridge notes from this process.
 
-### Automated live workflow
+### Automated live workflow (superseded)
+
+`scripts/live_acceptance.py` above covers everything this older script does and more; keep
+using this one only if you want a smaller, Bridge-only pass.
 
 The live workflow creates folders and drafts, sends test messages, exercises message actions, and permanently removes data carrying its unique test marker.
 Use a recipient mailbox you control.
