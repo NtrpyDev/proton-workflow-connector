@@ -376,9 +376,7 @@ class BridgeMailClient:
         uid = _validate_uid(message_id)
         with self._imap() as conn:
             self._select(conn, folder, readonly=True)
-            status, data = conn.uid("FETCH", uid, "(BODY.PEEK[HEADER])")
-            _require_ok(status, data)
-            raw = _extract_fetch_bytes(data)
+            raw, _ = _fetch_message_data(conn, uid, "(BODY.PEEK[HEADER])")
         message = BytesParser(policy=policy.default).parsebytes(raw)
         headers: dict[str, Any] = {}
         for key in message.keys():
@@ -1272,9 +1270,7 @@ class BridgeMailClient:
         with self._imap() as conn:
             self._select(conn, folder, readonly=not mark_seen)
             mode = "RFC822" if mark_seen else "BODY.PEEK[]"
-            status, data = conn.uid("FETCH", uid, f"({mode} FLAGS)")
-            _require_ok(status, data)
-            raw = _extract_fetch_bytes(data)
+            raw, data = _fetch_message_data(conn, uid, f"({mode} FLAGS)")
             flags = _extract_flags(data)
             return uid, BytesParser(policy=policy.default).parsebytes(raw), flags
 
@@ -1446,13 +1442,11 @@ class BridgeMailClient:
             }
 
     def _fetch_summary(self, conn: Any, uid: str) -> MessageSummary:
-        status, data = conn.uid(
-            "FETCH",
+        raw, data = _fetch_message_data(
+            conn,
             uid,
             "(BODY.PEEK[HEADER.FIELDS (SUBJECT FROM TO DATE MESSAGE-ID)] FLAGS)",
         )
-        _require_ok(status, data)
-        raw = _extract_fetch_bytes(data)
         message = BytesParser(policy=policy.default).parsebytes(raw)
         flags = _extract_flags(data)
         return MessageSummary(
@@ -1653,6 +1647,27 @@ def _extract_fetch_bytes(data: Any) -> bytes:
         if isinstance(item, bytes) and b"\r\n" in item:
             return item
     raise RuntimeError("IMAP FETCH response did not include message bytes")
+
+
+def _fetch_message_data(conn: Any, uid: str, items: str, *, attempts: int = 3, delay: float = 0.5) -> tuple[bytes, Any]:
+    """UID FETCH that returns the message literal plus the raw response data.
+
+    Bridge occasionally answers an OK FETCH with no literal right after another session
+    touches the mailbox, so an empty response is retried briefly before it is an error.
+    """
+    for attempt in range(1, attempts + 1):
+        status, data = conn.uid("FETCH", uid, items)
+        _require_ok(status, data)
+        try:
+            return _extract_fetch_bytes(data), data
+        except RuntimeError:
+            if attempt == attempts:
+                break
+            time.sleep(delay)
+    raise RuntimeError(
+        f"Message {uid} returned no data from IMAP FETCH — it may have been moved or deleted "
+        "(UIDs change when a message leaves the folder)"
+    )
 
 
 def _extract_flags(data: Any) -> list[str]:

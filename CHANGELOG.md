@@ -2,6 +2,23 @@
 
 All notable changes to this project are recorded here. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.2.1 - 2026-07-01
+
+### Fixed
+
+- Synchronous tools now run in worker threads instead of on the event loop, so one stalled
+  Bridge IMAP call can no longer freeze the whole server for every session.
+- JWKS and OIDC discovery fetches send an explicit `User-Agent`; CDNs and WAFs that block
+  urllib's default agent were silently rejecting every OAuth token with 401. Failed token
+  verifications are now logged with the reason instead of being swallowed.
+- Message fetches retry briefly when Bridge answers an OK FETCH without the message body
+  (a transient Bridge quirk under load), and report a clear "moved or deleted" error when
+  a stale UID is fetched after a message left the folder.
+
+All three were found by the new live acceptance harness (`scripts/live_acceptance.py`), which
+exercises all 67 tools against a real Bridge, SimpleLogin, watcher sinks, safety modes, and a
+hosted OAuth deployment.
+
 ## 1.2.0 - 2026-07-01
 
 ### Added

@@ -156,3 +156,13 @@ def test_tools_expose_mcp_annotations():
     assert ann["permanently_delete_message"].destructiveHint is True
     assert ann["send_mail"].readOnlyHint is False
     assert ann["send_mail"].openWorldHint is True
+
+
+def test_tool_functions_run_off_the_event_loop():
+    """A synchronous tool body would block the event loop for every session if Bridge hangs."""
+    import inspect
+
+    server = build_server()
+    for name, tool in server._tool_manager._tools.items():
+        assert tool.is_async, f"{name} would run on the event loop"
+        assert inspect.iscoroutinefunction(tool.fn), f"{name} is not wrapped as a coroutine"

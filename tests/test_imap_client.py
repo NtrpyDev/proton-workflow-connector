@@ -833,6 +833,39 @@ def test_parse_helpers_handle_missing_headers():
     assert _parse_authentication(empty)["dmarc"] is None
 
 
+def test_fetch_retries_when_bridge_omits_the_message_literal(monkeypatch):
+    # Bridge occasionally answers an OK FETCH with no literal right after another
+    # session touches the mailbox; the fetch must retry instead of failing outright.
+    from types import SimpleNamespace
+
+    from proton_mail_mcp import imap_client
+    from proton_mail_mcp.imap_client import _fetch_message_data
+
+    monkeypatch.setattr(imap_client.time, "sleep", lambda _seconds: None)
+    responses = [("OK", [None]), ("OK", [(b"1 (UID 7 FLAGS (\\Seen))", b"Subject: hi\r\n\r\nbody")])]
+    conn = SimpleNamespace(uid=lambda *_args: responses.pop(0))
+
+    raw, data = _fetch_message_data(conn, "7", "(BODY.PEEK[])")
+
+    assert raw.startswith(b"Subject: hi")
+    assert data[0][1] == raw
+
+
+def test_fetch_raises_after_repeated_empty_responses(monkeypatch):
+    from types import SimpleNamespace
+
+    from proton_mail_mcp import imap_client
+    from proton_mail_mcp.imap_client import _fetch_message_data
+
+    monkeypatch.setattr(imap_client.time, "sleep", lambda _seconds: None)
+    calls = []
+    conn = SimpleNamespace(uid=lambda *args: (calls.append(args), ("OK", [None]))[1])
+
+    with pytest.raises(RuntimeError, match="moved or deleted"):
+        _fetch_message_data(conn, "7", "(BODY.PEEK[])")
+    assert len(calls) == 3
+
+
 def test_draft_reply_saves_to_drafts_without_sending():
     FakeIMAP.messages = {"101": reply_message_bytes()}
     client = BridgeMailClient(settings(), imap_factory=FakeIMAP, smtp_factory=FakeSMTP)

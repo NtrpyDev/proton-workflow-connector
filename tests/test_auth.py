@@ -120,6 +120,35 @@ def test_oidc_verifier_accepts_list_scope_claim():
     assert access_token.scopes == ["proton-workflow-connector", "mail.read"]
 
 
+def test_jwks_fetches_send_an_explicit_user_agent(monkeypatch):
+    # CDNs/WAFs in front of an issuer block urllib's default UA; a silent 403 there
+    # rejects every token, so both the discovery and JWKS fetches must identify themselves.
+    seen: dict[str, dict] = {}
+
+    def fake_get(url, **kwargs):
+        seen["discovery"] = kwargs.get("headers") or {}
+        return SimpleNamespace(
+            raise_for_status=lambda: None,
+            json=lambda: {"jwks_uri": "https://issuer.example.com/jwks"},
+        )
+
+    class FakeJWKClient:
+        def __init__(self, url, headers=None, **kwargs):
+            seen["jwks"] = headers or {}
+
+    monkeypatch.setattr("httpx.get", fake_get)
+    monkeypatch.setattr(jwt, "PyJWKClient", FakeJWKClient)
+    verifier = OIDCTokenVerifier(
+        issuer_url="https://issuer.example.com",
+        audience="https://mail.example.com/mcp",
+    )
+
+    asyncio.run(verifier.verify_token("not-a-jwt"))
+
+    assert seen["discovery"].get("User-Agent") == "proton-workflow-connector"
+    assert seen["jwks"].get("User-Agent") == "proton-workflow-connector"
+
+
 def test_oidc_discovery_rejects_insecure_remote_jwks(monkeypatch):
     response = SimpleNamespace(
         raise_for_status=lambda: None,

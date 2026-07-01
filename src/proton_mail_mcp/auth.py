@@ -1,10 +1,17 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any
 from urllib.parse import urlparse
 
 from mcp.server.auth.provider import AccessToken
+
+logger = logging.getLogger("proton_workflow_connector.auth")
+
+# CDNs and WAFs in front of an issuer commonly block urllib's default User-Agent,
+# so JWKS fetches must identify themselves explicitly.
+USER_AGENT = "proton-workflow-connector"
 
 
 class OIDCTokenVerifier:
@@ -17,14 +24,17 @@ class OIDCTokenVerifier:
     async def verify_token(self, token: str) -> AccessToken | None:
         try:
             return await asyncio.to_thread(self._verify_token, token)
-        except Exception:
+        except Exception as exc:
+            logger.warning("Rejected bearer token: %s: %s", type(exc).__name__, exc)
             return None
 
     def _verify_token(self, token: str) -> AccessToken:
         import jwt
 
         if self._jwks_client is None:
-            self._jwks_client = jwt.PyJWKClient(self.jwks_url or self._discover_jwks_url())
+            self._jwks_client = jwt.PyJWKClient(
+                self.jwks_url or self._discover_jwks_url(), headers={"User-Agent": USER_AGENT}
+            )
         signing_key = self._jwks_client.get_signing_key_from_jwt(token)
         claims = jwt.decode(
             token,
@@ -50,7 +60,7 @@ class OIDCTokenVerifier:
         import httpx
 
         url = f"{self.issuer_url}/.well-known/openid-configuration"
-        response = httpx.get(url, timeout=10.0)
+        response = httpx.get(url, timeout=10.0, headers={"User-Agent": USER_AGENT})
         response.raise_for_status()
         data = response.json()
         jwks_uri = data.get("jwks_uri")

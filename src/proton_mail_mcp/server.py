@@ -792,6 +792,7 @@ def build_server(
         }
 
     _apply_tool_annotations(mcp)
+    _run_tools_in_worker_threads(mcp)
     return mcp
 
 
@@ -855,6 +856,39 @@ _OPEN_WORLD_TOOLS = frozenset(
         "server_status",
     }
 )
+
+
+def _run_tools_in_worker_threads(mcp) -> None:
+    """Re-register every synchronous tool to run in a worker thread.
+
+    FastMCP calls synchronous tool functions directly on the event loop, so a single Bridge
+    IMAP call that stops responding would freeze the whole server — every session, every
+    request — until the process is killed. Running tool bodies in anyio worker threads keeps
+    the loop free; a hung call then costs one thread instead of the server.
+    """
+    import functools
+    import inspect
+
+    import anyio
+
+    try:
+        tools = mcp._tool_manager._tools
+    except Exception:  # pragma: no cover - defensive: never fail server build over this
+        return
+    for tool in tools.values():
+        fn = tool.fn
+        if inspect.iscoroutinefunction(fn):
+            continue
+
+        def make_async(sync_fn):
+            @functools.wraps(sync_fn)
+            async def run_in_thread(*args, **kwargs):
+                return await anyio.to_thread.run_sync(functools.partial(sync_fn, *args, **kwargs))
+
+            return run_in_thread
+
+        tool.fn = make_async(fn)
+        tool.is_async = True
 
 
 def _apply_tool_annotations(mcp) -> None:
