@@ -294,6 +294,25 @@ class BridgeMailClient:
                 "more": len(new_uids) > len(delivered),
             }
 
+    def idle_wait(self, *, folder: str = "INBOX", timeout: float = 60.0) -> bool:
+        """Block on IMAP IDLE until the folder changes or ``timeout`` elapses, for low-latency triggers.
+
+        Returns True if IDLE ran (whether it saw activity or hit its own timeout) and False if IDLE is
+        not usable, so the caller can fall back to interval sleeping. New mail returns almost
+        immediately; otherwise this returns after ``timeout`` seconds so other sources still get polled.
+        """
+        with self._imap() as conn:
+            if not hasattr(conn, "idle"):
+                return False
+            self._select(conn, folder, readonly=True)
+            try:
+                with conn.idle(int(max(timeout, 1))) as idler:
+                    for _typ, _data in idler:
+                        break  # any untagged response means activity; stop waiting and let the caller poll
+            except (OSError, imaplib.IMAP4.error):
+                return False
+            return True
+
     def read_mail(
         self,
         *,

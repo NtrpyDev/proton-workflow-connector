@@ -97,6 +97,42 @@ stacks).
 A top-level array (without the `rules` wrapper) is also accepted. Rule names must be unique — they
 key the persisted cursor, so reusing a name would share a cursor.
 
+## Rule actions: act, don't just notify
+
+A mail rule can carry an `actions` list. When it matches a message, the watcher runs those actions
+on it through the same IMAP client the tools use — so the connector becomes the server-side filters
+Bridge doesn't expose. A rule can act, notify (a sink), or both; a rule with actions and no delivery
+target just acts.
+
+```json
+{
+  "rules": [
+    { "name": "newsletters", "source": "mail", "folder": "INBOX", "from": "substack.com",
+      "actions": [ {"type": "label", "label": "News"}, {"type": "mark_read"}, {"type": "archive"} ] },
+    { "name": "receipts", "source": "mail", "folder": "INBOX", "subject": "receipt",
+      "webhook_url": "https://example.com/hooks/receipts",
+      "actions": [ {"type": "forward", "to": "books@example.com"} ] }
+  ]
+}
+```
+
+Available actions: `mark_read`, `mark_unread`, `star`, `unstar`, `label`, `remove_label`, `archive`,
+`trash`, `move` (needs `folder`), and `forward` (needs `to`, optional `text`). `label`/`remove_label`
+need a `label`. Permanent deletion is intentionally not available as an auto-action.
+
+Ordering is chosen for reliability under at-least-once delivery: flag/label actions run first, then
+the sink delivers, then moves run (so a delivery failure can never move the message out from under a
+retry), and `forward` runs last from the message's final folder. **`forward` is at-least-once** — if
+a later step fails and the event retries, a forward can fire twice, so keep it for cases where a
+duplicate is tolerable. Only one move-type action (`archive`/`trash`/`move`) per rule.
+
+## Low-latency triggers with IMAP IDLE
+
+By default the watcher polls every `--interval` seconds. Add `--idle` (or `PROTON_MCP_WATCH_IDLE=true`)
+and it uses IMAP IDLE on the primary mail folder to wake within moments of new mail instead of waiting
+for the next poll. It falls back to interval polling if the server doesn't support IDLE. Alias sources
+and other folders are still polled at the interval on each wake, so IDLE mainly cuts INBOX latency.
+
 ## Delivery targets (sinks)
 
 `PROTON_MCP_WATCH_SINK` (or `--sink`) selects where events go. Webhook stays the default.
@@ -239,8 +275,9 @@ program per event, so a few boundaries are worth stating plainly:
   `--command` — never from a rules file. The event JSON is written to that program's standard input,
   not spliced into its command line, so a crafted email subject or alias name can't inject arguments.
   It runs without a shell, so there's no shell expansion to worry about.
-- **A rules file is trusted configuration.** Its per-rule `webhook_url` decides where events go, so
-  treat a rules file like a config secret: don't load one from a source you don't control.
+- **A rules file is trusted configuration.** Its per-rule `webhook_url` decides where events go and
+  its `actions` move, label, or forward your mail with your account's access, so treat a rules file
+  like a config secret: don't load one from a source you don't control.
 - **Events carry attacker-influenced content.** Anyone can email you a subject line or create an
   alias name, and that text ends up in the event payload. Whatever consumes the event — your webhook
   receiver, log pipeline, or command — should treat event fields as untrusted input.

@@ -66,6 +66,7 @@ class WatchRule:
     starred: bool | None = None
     limit: int = 50
     webhook_url: str | None = None
+    actions: tuple[dict[str, Any], ...] = field(default=(), compare=False)
 
     def criteria(self) -> dict[str, Any]:
         return {
@@ -328,6 +329,135 @@ def resolve_sink(
     raise RuntimeError(f"Unknown sink type {sink_type!r}; use webhook, file, or command")
 
 
+def _build_rule_sink(
+    settings: Settings,
+    rule: WatchRule,
+    override: Sink | None,
+    command_runner: Callable[[Sequence[str], bytes, float], tuple[int, str]] | None,
+) -> Sink:
+    """Resolve a rule's sink, but let an action-only rule (with no delivery target) deliver nothing."""
+    try:
+        return resolve_sink(settings, rule, override=override, command_runner=command_runner)
+    except RuntimeError:
+        if rule.actions:
+            return _null_sink  # action-only rule: perform actions, no delivery
+        raise
+
+
+FLAG_ACTIONS = {"mark_read", "mark_unread", "star", "unstar", "label", "remove_label"}
+MOVE_ACTIONS = {"archive", "trash", "move"}
+FORWARD_ACTION = "forward"
+ALLOWED_ACTIONS = FLAG_ACTIONS | MOVE_ACTIONS | {FORWARD_ACTION}
+
+
+def _null_sink(event: Mapping[str, Any]) -> None:
+    """Delivery target for action-only rules: run actions, deliver nothing."""
+    return None
+
+
+def _parse_actions(raw: Any, *, rule_name: str, source: str) -> tuple[dict[str, Any], ...]:
+    """Validate a rule's ``actions`` list. Actions only apply to mail rules; perm-delete is refused."""
+    if not raw:
+        return ()
+    if source != SOURCE_MAIL:
+        raise ValueError(f"Rule {rule_name!r}: actions are only supported for mail rules")
+    if not isinstance(raw, Sequence) or isinstance(raw, (str, bytes)):
+        raise ValueError(f"Rule {rule_name!r}: 'actions' must be a list")
+    parsed: list[dict[str, Any]] = []
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise ValueError(f"Rule {rule_name!r}: each action must be an object")
+        kind = item.get("type")
+        if kind not in ALLOWED_ACTIONS:
+            raise ValueError(
+                f"Rule {rule_name!r}: unknown or disallowed action {kind!r}; allowed: {sorted(ALLOWED_ACTIONS)}"
+            )
+        action: dict[str, Any] = {"type": kind}
+        if kind == "move":
+            if not item.get("folder"):
+                raise ValueError(f"Rule {rule_name!r}: move action requires a 'folder'")
+            action["folder"] = str(item["folder"])
+        elif kind in {"label", "remove_label"}:
+            if not item.get("label"):
+                raise ValueError(f"Rule {rule_name!r}: {kind} action requires a 'label'")
+            action["label"] = str(item["label"])
+        elif kind == FORWARD_ACTION:
+            if not item.get("to"):
+                raise ValueError(f"Rule {rule_name!r}: forward action requires a 'to' address")
+            action["to"] = item["to"]
+            if item.get("text"):
+                action["text"] = str(item["text"])
+        parsed.append(action)
+    return tuple(parsed)
+
+
+def _final_folder(client: BridgeMailClient, rule: WatchRule) -> str:
+    """The folder a message ends up in after this rule's move actions (for a later forward read)."""
+    folder = rule.folder
+    for action in rule.actions:
+        if action["type"] == "archive":
+            folder = client.settings.archive_folder
+        elif action["type"] == "trash":
+            folder = client.settings.trash_folder
+        elif action["type"] == "move":
+            folder = action["folder"]
+    return folder
+
+
+def _run_flag_action(client: BridgeMailClient, action: dict[str, Any], uid: str, folder: str) -> None:
+    kind = action["type"]
+    if kind == "mark_read":
+        client.mark_read(message_id=uid, folder=folder)
+    elif kind == "mark_unread":
+        client.mark_unread(message_id=uid, folder=folder)
+    elif kind == "star":
+        client.star_message(message_id=uid, folder=folder)
+    elif kind == "unstar":
+        client.unstar_message(message_id=uid, folder=folder)
+    elif kind == "label":
+        client.apply_label(message_id=uid, label=action["label"], folder=folder)
+    elif kind == "remove_label":
+        client.remove_label(message_id=uid, label=action["label"], folder=folder)
+
+
+def _run_move_action(client: BridgeMailClient, action: dict[str, Any], uid: str, folder: str) -> None:
+    kind = action["type"]
+    if kind == "archive":
+        client.archive_message(message_id=uid, folder=folder)
+    elif kind == "trash":
+        client.trash_message(message_id=uid, folder=folder)
+    elif kind == "move":
+        client.move_message(message_id=uid, destination_folder=action["folder"], folder=folder)
+
+
+def process_event(client: BridgeMailClient | None, rule: WatchRule, event: Mapping[str, Any], sink: Sink) -> None:
+    """Run a rule's actions and deliver the event.
+
+    Order matters for at-least-once safety: flag/label actions (idempotent) run first, then the sink
+    delivers, then moves run (so a delivery failure never moves the message out from under a retry),
+    and forward runs last from the message's final folder (so a retry cannot easily double-send).
+    """
+    if not rule.actions or event.get("type") != EVENT_TYPE or client is None:
+        sink(event)
+        return
+    uid = str(event["message"]["uid"])
+    for action in rule.actions:
+        if action["type"] in FLAG_ACTIONS:
+            _run_flag_action(client, action, uid, rule.folder)
+            logger.info("Ran action %r for rule %r on uid %s", action["type"], rule.name, uid)
+    sink(event)
+    for action in rule.actions:
+        if action["type"] in MOVE_ACTIONS:
+            _run_move_action(client, action, uid, rule.folder)
+            logger.info("Ran action %r for rule %r on uid %s", action["type"], rule.name, uid)
+    forwards = [action for action in rule.actions if action["type"] == FORWARD_ACTION]
+    if forwards:
+        final_folder = _final_folder(client, rule)
+        for action in forwards:
+            client.forward_mail(message_id=uid, to=action["to"], folder=final_folder, text=action.get("text", ""))
+            logger.info("Ran forward action for rule %r on uid %s (at-least-once)", rule.name, uid)
+
+
 def write_dead_letter(path: str | os.PathLike[str], record: Mapping[str, Any]) -> None:
     """Append one undeliverable event to the dead-letter JSONL file so the source can make progress."""
     resolved = Path(path).expanduser()
@@ -518,6 +648,7 @@ def _rule_from_mapping(entry: Any) -> WatchRule:
         starred=entry.get("starred"),
         limit=int(entry.get("limit", 50)),
         webhook_url=entry.get("webhook_url"),
+        actions=_parse_actions(entry.get("actions"), rule_name=name, source=source),
     )
 
 
@@ -557,7 +688,7 @@ def run_watch(
         simplelogin = simplelogin or SimpleLoginClient(settings)
 
     store = store or CursorStore.load(default_state_path(settings))
-    sinks = {rule.name: resolve_sink(settings, rule, override=sink, command_runner=command_runner) for rule in rules}
+    sinks = {rule.name: _build_rule_sink(settings, rule, sink, command_runner) for rule in rules}
 
     dead_letter_path = default_dead_letter_path(settings)
     max_attempts = max(settings.watch_dead_letter_max_attempts, 1)
@@ -585,6 +716,7 @@ def run_watch(
                 rule=rule,
                 outcome=outcome,
                 sink=sinks[rule.name],
+                client=client,
                 store=store,
                 dead_letter_path=dead_letter_path,
                 max_attempts=max_attempts,
@@ -592,7 +724,18 @@ def run_watch(
             store.save()
         if once:
             return total
-        time.sleep(interval)
+        _wait_between_cycles(settings, client, rules, interval)
+
+
+def _wait_between_cycles(
+    settings: Settings, client: BridgeMailClient | None, rules: Sequence[WatchRule], interval: float
+) -> None:
+    """Sleep between poll cycles, or block on IMAP IDLE for near-instant mail triggers when enabled."""
+    idle_folder = next((rule.folder for rule in rules if rule.source in (SOURCE_MAIL, "")), None)
+    if settings.watch_idle and client is not None and idle_folder is not None:
+        if client.idle_wait(folder=idle_folder, timeout=interval):
+            return  # IDLE waited (activity or its own timeout); poll again now
+    time.sleep(interval)
 
 
 def _deliver_rule_events(
@@ -600,6 +743,7 @@ def _deliver_rule_events(
     rule: WatchRule,
     outcome: Mapping[str, Any],
     sink: Sink,
+    client: BridgeMailClient | None,
     store: CursorStore,
     dead_letter_path: str | os.PathLike[str],
     max_attempts: int,
@@ -615,7 +759,7 @@ def _deliver_rule_events(
         event = events[index]
         this_cursor = cursors[index]
         try:
-            sink(event)
+            process_event(client, rule, event, sink)
         except Exception as exc:
             fail_cursor, fail_count = store.get_failure(rule.name)
             fail_count = fail_count + 1 if fail_cursor == this_cursor else 1
@@ -687,6 +831,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="Failed delivery cycles on one event before it is dead-lettered.",
     )
     parser.add_argument("--interval", type=float, help="Seconds between polls.")
+    parser.add_argument(
+        "--idle",
+        action="store_true",
+        help="Use IMAP IDLE for near-instant mail triggers (falls back to --interval polling).",
+    )
     parser.add_argument("--unread-only", action="store_true", help="Only emit events for unread messages.")
     parser.add_argument("--once", action="store_true", help="Poll a single time and exit (useful for cron).")
     parser.add_argument("--state-path", help="Override the cursor state file location.")
@@ -722,6 +871,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         overrides["watch_dead_letter_max_attempts"] = args.dead_letter_max_attempts
     if args.interval is not None:
         overrides["watch_poll_interval"] = args.interval
+    if args.idle:
+        overrides["watch_idle"] = True
     if args.unread_only:
         overrides["watch_unread_only"] = True
     if args.state_path:

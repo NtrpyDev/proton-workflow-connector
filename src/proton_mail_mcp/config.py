@@ -80,6 +80,7 @@ class Settings:
     watch_command: str = ""
     watch_dead_letter_path: str = ""
     watch_dead_letter_max_attempts: int = 5
+    watch_idle: bool = False
 
     def require_bridge(self) -> None:
         missing = [
@@ -157,4 +158,5 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         watch_command=source.get("PROTON_MCP_WATCH_COMMAND", ""),
         watch_dead_letter_path=source.get("PROTON_MCP_WATCH_DEAD_LETTER", ""),
         watch_dead_letter_max_attempts=_env_int(source, "PROTON_MCP_WATCH_DEAD_LETTER_MAX_ATTEMPTS", 5),
+        watch_idle=_env_bool(source, "PROTON_MCP_WATCH_IDLE", False),
     )

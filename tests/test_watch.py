@@ -21,11 +21,63 @@ from proton_mail_mcp.watch import (
     make_command_sink,
     make_file_sink,
     poll_rule,
+    process_event,
     replay_dead_letter,
     resolve_sink,
     run_watch,
     sign_payload,
 )
+
+
+class RecordingClient:
+    """Records action calls (and serves poll_folder) for rule-action tests, no IMAP involved."""
+
+    def __init__(self, messages=None) -> None:
+        self.calls: list[tuple] = []
+        self.settings = Settings(archive_folder="Archive", trash_folder="Trash")
+        self._messages = messages or []
+
+    def poll_folder(self, *, folder, last_uid, uid_validity=None, **criteria):
+        msgs = [m for m in self._messages if int(m["uid"]) > last_uid]
+        return {
+            "folder": folder,
+            "messages": msgs,
+            "cursor_uid": int(msgs[-1]["uid"]) if msgs else last_uid,
+            "uid_validity": 7,
+            "baseline": False,
+            "reset": False,
+            "more": False,
+        }
+
+    def mark_read(self, *, message_id, folder):
+        self.calls.append(("mark_read", message_id, folder))
+
+    def mark_unread(self, *, message_id, folder):
+        self.calls.append(("mark_unread", message_id, folder))
+
+    def star_message(self, *, message_id, folder):
+        self.calls.append(("star", message_id, folder))
+
+    def unstar_message(self, *, message_id, folder):
+        self.calls.append(("unstar", message_id, folder))
+
+    def apply_label(self, *, message_id, label, folder):
+        self.calls.append(("label", message_id, label, folder))
+
+    def remove_label(self, *, message_id, label, folder):
+        self.calls.append(("remove_label", message_id, label, folder))
+
+    def archive_message(self, *, message_id, folder):
+        self.calls.append(("archive", message_id, folder))
+
+    def trash_message(self, *, message_id, folder):
+        self.calls.append(("trash", message_id, folder))
+
+    def move_message(self, *, message_id, destination_folder, folder):
+        self.calls.append(("move", message_id, destination_folder, folder))
+
+    def forward_mail(self, *, message_id, to, folder, text):
+        self.calls.append(("forward", message_id, to, folder, text))
 
 
 class FakeSimpleLogin:
@@ -587,3 +639,93 @@ def test_replay_dead_letter_preserves_unparseable_lines(tmp_path):
     assert summary["replayed"] == 1
     # The valid record delivered and dropped; the unparseable line is kept, not lost.
     assert dl.read_text(encoding="utf-8").strip().splitlines() == ["not json"]
+
+
+# --- Bucket 3: rule actions -----------------------------------------------------------------
+
+
+def test_process_event_runs_flags_then_sink_then_moves_then_forward():
+    client = RecordingClient()
+    rule = WatchRule(
+        name="triage",
+        source="mail",
+        folder="INBOX",
+        actions=(
+            {"type": "label", "label": "News"},
+            {"type": "mark_read"},
+            {"type": "archive"},
+            {"type": "forward", "to": "ops@example.com"},
+        ),
+    )
+    event = build_event("triage", "INBOX", {"uid": "42"})
+    # The sink records into the same list so ordering across actions and delivery is visible.
+    process_event(client, rule, event, lambda e: client.calls.append(("sink", e["message"]["uid"])))
+
+    kinds = [c[0] for c in client.calls]
+    assert kinds == ["label", "mark_read", "sink", "archive", "forward"]
+    # forward runs last, reading from the message's final folder (Archive after the archive action).
+    assert client.calls[-1] == ("forward", "42", "ops@example.com", "Archive", "")
+    # label/mark act in the original folder before the move.
+    assert client.calls[0] == ("label", "42", "News", "INBOX")
+
+
+def test_process_event_without_actions_just_delivers():
+    client = RecordingClient()
+    rule = WatchRule(name="plain", source="mail", folder="INBOX")
+    delivered = []
+    process_event(client, rule, build_event("plain", "INBOX", {"uid": "9"}), delivered.append)
+    assert client.calls == []
+    assert [e["message"]["uid"] for e in delivered] == ["9"]
+
+
+def test_load_rules_file_parses_actions(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text(
+        json.dumps(
+            [{"name": "triage", "from": "news@x", "actions": [{"type": "label", "label": "News"}, {"type": "archive"}]}]
+        )
+    )
+    rules = load_rules_file(path)
+    assert rules[0].actions == ({"type": "label", "label": "News"}, {"type": "archive"})
+
+
+def test_rules_file_rejects_actions_on_alias_source(tmp_path):
+    path = tmp_path / "rules.json"
+    path.write_text(json.dumps([{"name": "a", "source": "simplelogin_alias", "actions": [{"type": "archive"}]}]))
+    with pytest.raises(ValueError, match="only supported for mail"):
+        load_rules_file(path)
+
+
+def test_rules_file_rejects_unknown_and_incomplete_actions(tmp_path):
+    p1 = tmp_path / "r1.json"
+    p1.write_text(json.dumps([{"name": "a", "actions": [{"type": "permanent_delete"}]}]))
+    with pytest.raises(ValueError, match="disallowed action"):
+        load_rules_file(p1)
+    p2 = tmp_path / "r2.json"
+    p2.write_text(json.dumps([{"name": "a", "actions": [{"type": "move"}]}]))
+    with pytest.raises(ValueError, match="requires a 'folder'"):
+        load_rules_file(p2)
+    p3 = tmp_path / "r3.json"
+    p3.write_text(json.dumps([{"name": "a", "actions": [{"type": "forward"}]}]))
+    with pytest.raises(ValueError, match="requires a 'to'"):
+        load_rules_file(p3)
+
+
+def test_run_watch_action_only_rule_runs_actions_without_delivery(tmp_path):
+    client = RecordingClient(messages=[{"uid": "42", "subject": "hi"}])
+    store = CursorStore.load(tmp_path / "state.json")
+    store.set("triage", cursor_uid=41, uid_validity=7)
+    rule = WatchRule(
+        name="triage",
+        source="mail",
+        folder="INBOX",
+        actions=({"type": "mark_read"}, {"type": "archive"}),
+    )
+
+    # No webhook, no sink override: an action-only rule delivers nothing but still acts.
+    count = run_watch(settings(), rules=[rule], client=client, store=store, once=True)
+
+    assert count == 1
+    kinds = [c[0] for c in client.calls]
+    assert kinds == ["mark_read", "archive"]
+    assert store.get("triage") == (42, 7)

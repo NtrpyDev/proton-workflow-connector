@@ -773,3 +773,57 @@ def test_unsubscribe_prefers_https_one_click(monkeypatch):
     assert calls["url"] == "https://list.example/unsub?u=1"
     assert calls["data"] == {"List-Unsubscribe": "One-Click"}
     assert FakeSMTP.instances == []  # HTTP path, no email sent
+
+
+# --- Bucket 3: IMAP IDLE ---------------------------------------------------------------------
+
+
+class FakeIdleConn:
+    def __init__(self, host, port, activity):
+        self._activity = activity
+        self.commands = []
+
+    def login(self, username, password):
+        return "OK", []
+
+    def logout(self):
+        return "OK", []
+
+    def select(self, folder, readonly=False):
+        self.commands.append(("select", folder, readonly))
+        return "OK", [b"1"]
+
+    def idle(self, duration):
+        responses = [("EXISTS", b"1")] if self._activity else []
+
+        class Idler:
+            def __enter__(self_inner):
+                return iter(responses)
+
+            def __exit__(self_inner, *args):
+                return False
+
+        return Idler()
+
+
+class NoIdleConn:
+    def login(self, username, password):
+        return "OK", []
+
+    def logout(self):
+        return "OK", []
+
+
+def test_idle_wait_returns_true_on_activity():
+    client = BridgeMailClient(settings(), imap_factory=lambda h, p: FakeIdleConn(h, p, activity=True))
+    assert client.idle_wait(folder="INBOX", timeout=5) is True
+
+
+def test_idle_wait_returns_true_on_timeout_without_activity():
+    client = BridgeMailClient(settings(), imap_factory=lambda h, p: FakeIdleConn(h, p, activity=False))
+    assert client.idle_wait(folder="INBOX", timeout=5) is True
+
+
+def test_idle_wait_falls_back_when_idle_unsupported():
+    client = BridgeMailClient(settings(), imap_factory=lambda h, p: NoIdleConn())
+    assert client.idle_wait(folder="INBOX", timeout=5) is False
