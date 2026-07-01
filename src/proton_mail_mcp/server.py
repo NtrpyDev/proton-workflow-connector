@@ -265,6 +265,8 @@ def build_server(
         sender_name: str | None = None,
         from_address: str | None = None,
         attachments: list[dict] | None = None,
+        dry_run: bool = False,
+        trusted_html: bool = False,
     ) -> dict:
         """Send mail through Proton Mail Bridge SMTP."""
         return mail.send_mail(
@@ -278,6 +280,8 @@ def build_server(
             sender_name=sender_name,
             from_address=from_address,
             attachments=attachments,
+            dry_run=dry_run,
+            trusted_html=trusted_html,
         )
 
     @mcp.tool()
@@ -289,6 +293,8 @@ def build_server(
         sender_name: str | None = None,
         from_address: str | None = None,
         attachments: list[dict] | None = None,
+        dry_run: bool = False,
+        trusted_html: bool = False,
     ) -> dict:
         """Reply to the sender while preserving standard email thread headers."""
         return mail.reply_mail(
@@ -300,6 +306,8 @@ def build_server(
             sender_name=sender_name,
             from_address=from_address,
             attachments=attachments,
+            dry_run=dry_run,
+            trusted_html=trusted_html,
         )
 
     @mcp.tool()
@@ -311,6 +319,8 @@ def build_server(
         sender_name: str | None = None,
         from_address: str | None = None,
         attachments: list[dict] | None = None,
+        dry_run: bool = False,
+        trusted_html: bool = False,
     ) -> dict:
         """Reply to all original recipients except configured sender addresses."""
         return mail.reply_mail(
@@ -322,6 +332,8 @@ def build_server(
             sender_name=sender_name,
             from_address=from_address,
             attachments=attachments,
+            dry_run=dry_run,
+            trusted_html=trusted_html,
         )
 
     @mcp.tool()
@@ -337,6 +349,8 @@ def build_server(
         from_address: str | None = None,
         include_original_attachments: bool = True,
         attachments: list[dict] | None = None,
+        dry_run: bool = False,
+        trusted_html: bool = False,
     ) -> dict:
         """Forward one message with optional original and new attachments."""
         return mail.forward_mail(
@@ -351,6 +365,8 @@ def build_server(
             from_address=from_address,
             include_original_attachments=include_original_attachments,
             attachments=attachments,
+            dry_run=dry_run,
+            trusted_html=trusted_html,
         )
 
     @mcp.tool()
@@ -363,6 +379,7 @@ def build_server(
         sender_name: str | None = None,
         from_address: str | None = None,
         attachments: list[dict] | None = None,
+        trusted_html: bool = False,
     ) -> dict:
         """Compose a reply and save it to Drafts for review instead of sending it."""
         return mail.draft_reply(
@@ -374,6 +391,7 @@ def build_server(
             sender_name=sender_name,
             from_address=from_address,
             attachments=attachments,
+            trusted_html=trusted_html,
         )
 
     @mcp.tool()
@@ -389,6 +407,7 @@ def build_server(
         from_address: str | None = None,
         include_original_attachments: bool = True,
         attachments: list[dict] | None = None,
+        trusted_html: bool = False,
     ) -> dict:
         """Compose a forward and save it to Drafts for review instead of sending it."""
         return mail.draft_forward(
@@ -403,6 +422,7 @@ def build_server(
             from_address=from_address,
             include_original_attachments=include_original_attachments,
             attachments=attachments,
+            trusted_html=trusted_html,
         )
 
     @mcp.tool()
@@ -417,6 +437,7 @@ def build_server(
         sender_name: str | None = None,
         from_address: str | None = None,
         attachments: list[dict] | None = None,
+        trusted_html: bool = False,
     ) -> dict:
         """Create a draft message in the configured drafts folder."""
         return mail.create_draft(
@@ -430,6 +451,7 @@ def build_server(
             sender_name=sender_name,
             from_address=from_address,
             attachments=attachments,
+            trusted_html=trusted_html,
         )
 
     @mcp.tool()
@@ -445,6 +467,7 @@ def build_server(
         sender_name: str | None = None,
         from_address: str | None = None,
         attachments: list[dict] | None = None,
+        trusted_html: bool = False,
     ) -> dict:
         """Replace a draft by creating the new draft before deleting the old UID."""
         return mail.update_draft(
@@ -459,6 +482,7 @@ def build_server(
             sender_name=sender_name,
             from_address=from_address,
             attachments=attachments,
+            trusted_html=trusted_html,
         )
 
     @mcp.tool()
@@ -549,77 +573,105 @@ def build_server(
         return mail.restore_message(message_id=message_id, folder=folder, destination_folder=destination_folder)
 
     @mcp.tool()
-    def permanently_delete_message(message_id: str, folder: str = "INBOX", confirm: bool = False) -> dict:
+    def permanently_delete_message(
+        message_id: str, folder: str = "INBOX", confirm: bool = False, dry_run: bool = False
+    ) -> dict:
         """Move one message from a writable folder through Trash, then selectively expunge it."""
-        _require_confirmation(confirm, "permanently delete this message")
-        return mail.permanently_delete_message(message_id=message_id, folder=folder)
+        if not dry_run:
+            _require_confirmation(confirm, "permanently delete this message")
+        return mail.permanently_delete_message(message_id=message_id, folder=folder, dry_run=dry_run)
 
     @mcp.tool()
-    def bulk_mark_read(message_ids: list[str], folder: str = "INBOX") -> dict:
+    def bulk_mark_read(message_ids: list[str], folder: str = "INBOX", dry_run: bool = False) -> dict:
         """Mark explicit message UIDs read, capped by PROTON_MCP_BULK_LIMIT."""
-        return mail.bulk_mark_read(message_ids=message_ids, folder=folder)
+        return mail.bulk_mark_read(message_ids=message_ids, folder=folder, dry_run=dry_run)
 
     @mcp.tool()
-    def bulk_mark_unread(message_ids: list[str], folder: str = "INBOX") -> dict:
+    def bulk_mark_unread(message_ids: list[str], folder: str = "INBOX", dry_run: bool = False) -> dict:
         """Mark explicit message UIDs unread, capped by PROTON_MCP_BULK_LIMIT."""
-        return mail.bulk_mark_unread(message_ids=message_ids, folder=folder)
+        return mail.bulk_mark_unread(message_ids=message_ids, folder=folder, dry_run=dry_run)
 
     @mcp.tool()
-    def bulk_star(message_ids: list[str], folder: str = "INBOX") -> dict:
+    def bulk_star(message_ids: list[str], folder: str = "INBOX", dry_run: bool = False) -> dict:
         """Star explicit message UIDs, capped by PROTON_MCP_BULK_LIMIT."""
-        return mail.bulk_star(message_ids=message_ids, folder=folder)
+        return mail.bulk_star(message_ids=message_ids, folder=folder, dry_run=dry_run)
 
     @mcp.tool()
-    def bulk_unstar(message_ids: list[str], folder: str = "INBOX") -> dict:
+    def bulk_unstar(message_ids: list[str], folder: str = "INBOX", dry_run: bool = False) -> dict:
         """Unstar explicit message UIDs, capped by PROTON_MCP_BULK_LIMIT."""
-        return mail.bulk_unstar(message_ids=message_ids, folder=folder)
+        return mail.bulk_unstar(message_ids=message_ids, folder=folder, dry_run=dry_run)
 
     @mcp.tool()
-    def bulk_move(message_ids: list[str], destination_folder: str, folder: str = "INBOX") -> dict:
+    def bulk_move(
+        message_ids: list[str], destination_folder: str, folder: str = "INBOX", dry_run: bool = False
+    ) -> dict:
         """Move explicit message UIDs to another folder, capped by PROTON_MCP_BULK_LIMIT."""
-        return mail.bulk_move(message_ids=message_ids, destination_folder=destination_folder, folder=folder)
+        return mail.bulk_move(
+            message_ids=message_ids,
+            destination_folder=destination_folder,
+            folder=folder,
+            dry_run=dry_run,
+        )
 
     @mcp.tool()
-    def bulk_copy(message_ids: list[str], destination_folder: str, folder: str = "INBOX") -> dict:
+    def bulk_copy(
+        message_ids: list[str], destination_folder: str, folder: str = "INBOX", dry_run: bool = False
+    ) -> dict:
         """Copy explicit message UIDs, capped by PROTON_MCP_BULK_LIMIT."""
-        return mail.bulk_copy(message_ids=message_ids, destination_folder=destination_folder, folder=folder)
+        return mail.bulk_copy(
+            message_ids=message_ids,
+            destination_folder=destination_folder,
+            folder=folder,
+            dry_run=dry_run,
+        )
 
     @mcp.tool()
-    def bulk_archive(message_ids: list[str], folder: str = "INBOX") -> dict:
+    def bulk_archive(message_ids: list[str], folder: str = "INBOX", dry_run: bool = False) -> dict:
         """Archive explicit message UIDs, capped by PROTON_MCP_BULK_LIMIT."""
-        return mail.bulk_archive(message_ids=message_ids, folder=folder)
+        return mail.bulk_archive(message_ids=message_ids, folder=folder, dry_run=dry_run)
 
     @mcp.tool()
-    def bulk_trash(message_ids: list[str], folder: str = "INBOX") -> dict:
+    def bulk_trash(message_ids: list[str], folder: str = "INBOX", dry_run: bool = False) -> dict:
         """Trash explicit message UIDs, capped by PROTON_MCP_BULK_LIMIT."""
-        return mail.bulk_trash(message_ids=message_ids, folder=folder)
+        return mail.bulk_trash(message_ids=message_ids, folder=folder, dry_run=dry_run)
 
     @mcp.tool()
-    def bulk_restore(message_ids: list[str], folder: str | None = None, destination_folder: str = "INBOX") -> dict:
+    def bulk_restore(
+        message_ids: list[str],
+        folder: str | None = None,
+        destination_folder: str = "INBOX",
+        dry_run: bool = False,
+    ) -> dict:
         """Restore explicit message UIDs, capped by PROTON_MCP_BULK_LIMIT."""
         return mail.bulk_restore(
             message_ids=message_ids,
             folder=folder,
             destination_folder=destination_folder,
+            dry_run=dry_run,
         )
 
     @mcp.tool()
-    def bulk_permanently_delete(message_ids: list[str], folder: str = "INBOX", confirm: bool = False) -> dict:
+    def bulk_permanently_delete(
+        message_ids: list[str], folder: str = "INBOX", confirm: bool = False, dry_run: bool = False
+    ) -> dict:
         """Move explicit UIDs through Trash and expunge them after confirmation."""
-        _require_confirmation(confirm, "permanently delete these messages")
-        return mail.bulk_permanently_delete(message_ids=message_ids, folder=folder)
+        if not dry_run:
+            _require_confirmation(confirm, "permanently delete these messages")
+        return mail.bulk_permanently_delete(message_ids=message_ids, folder=folder, dry_run=dry_run)
 
     @mcp.tool()
-    def empty_trash(confirm: bool = False) -> dict:
+    def empty_trash(confirm: bool = False, dry_run: bool = False) -> dict:
         """Permanently empty the configured Trash folder after confirmation."""
-        _require_confirmation(confirm, "permanently empty Trash")
-        return mail.empty_folder(folder=settings.trash_folder)
+        if not dry_run:
+            _require_confirmation(confirm, "permanently empty Trash")
+        return mail.empty_folder(folder=settings.trash_folder, dry_run=dry_run)
 
     @mcp.tool()
-    def empty_spam(confirm: bool = False) -> dict:
+    def empty_spam(confirm: bool = False, dry_run: bool = False) -> dict:
         """Move Spam messages through Trash and expunge them after confirmation."""
-        _require_confirmation(confirm, "permanently empty Spam")
-        return mail.empty_folder(folder=settings.spam_folder)
+        if not dry_run:
+            _require_confirmation(confirm, "permanently empty Spam")
+        return mail.empty_folder(folder=settings.spam_folder, dry_run=dry_run)
 
     @mcp.tool()
     def simplelogin_user_info() -> dict:

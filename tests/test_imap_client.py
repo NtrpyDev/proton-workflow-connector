@@ -8,6 +8,7 @@ from email.parser import BytesParser
 import pytest
 
 from proton_mail_mcp.config import Settings
+from proton_mail_mcp.html_sanitize import sanitize_html
 from proton_mail_mcp.imap_client import BridgeMailClient, build_search_criteria
 
 
@@ -227,6 +228,8 @@ def test_mark_read_sets_seen_flag():
     result = client.mark_read(message_id="123")
 
     assert result["updated"] is True
+    assert result["verified"] is True
+    assert "\\Seen" in result["flags"]
     assert ("uid", "STORE", ("123", "+FLAGS.SILENT", "(\\Seen)")) in FakeIMAP.instances[0].commands
 
 
@@ -323,6 +326,63 @@ def test_send_mail_formats_recipients_and_removes_bcc_header():
     assert parsed["Bcc"] is None
 
 
+def test_sanitize_html_strips_active_content_and_reports_changes():
+    dirty = (
+        '<p onclick="steal()">Hi</p>'
+        "<script>alert(1)</script>"
+        "<style>body{display:none}</style>"
+        '<a href="javascript:alert(1)">link</a>'
+        '<img src="data:text/html,payload">'
+    )
+
+    clean, active = sanitize_html(dirty)
+    unchanged, clean_active = sanitize_html("<p>Safe</p>")
+
+    assert active is True
+    assert clean_active is False
+    assert unchanged == "<p>Safe</p>"
+    assert "onclick" not in clean
+    assert "<script" not in clean
+    assert "<style" not in clean
+    assert "javascript:" not in clean
+    assert "data:text" not in clean
+
+
+def test_send_mail_dry_run_previews_without_smtp_or_active_html():
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP, smtp_factory=FakeSMTP)
+
+    result = client.send_mail(
+        to="alice@example.com",
+        subject="Preview",
+        text="Body",
+        html='<p onclick="x()">Body</p>',
+        dry_run=True,
+    )
+
+    assert result["dry_run"] is True
+    assert result["would_send"] is True
+    assert result["kind"] == "send"
+    assert result["html_sanitized"] is True
+    assert result["recipients"] == ["alice@example.com"]
+    assert FakeSMTP.instances == []
+
+
+def test_trusted_html_skips_sanitization():
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP, smtp_factory=FakeSMTP)
+
+    result = client.send_mail(
+        to="alice@example.com",
+        subject="Trusted",
+        text="Body",
+        html='<p onclick="x()">Body</p>',
+        trusted_html=True,
+    )
+
+    assert result["html_sanitized"] is False
+    sent = BytesParser(policy=policy.default).parsebytes(FakeSMTP.instances[0].commands[1][1])
+    assert 'onclick="x()"' in sent.get_body(preferencelist=("html",)).get_content()
+
+
 def test_folder_management_and_status():
     client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
 
@@ -413,6 +473,23 @@ def test_reply_all_preserves_thread_headers_and_excludes_sender():
     assert "Original body" in sent.get_body(preferencelist=("plain",)).get_content()
 
 
+def test_reply_mail_dry_run_previews_without_smtp():
+    FakeIMAP.messages["55"] = reply_message_bytes()
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP, smtp_factory=FakeSMTP)
+
+    result = client.reply_mail(
+        message_id="55",
+        text="My reply",
+        html='<p onclick="x()">My reply</p>',
+        dry_run=True,
+    )
+
+    assert result["dry_run"] is True
+    assert result["kind"] == "reply"
+    assert result["html_sanitized"] is True
+    assert FakeSMTP.instances == []
+
+
 def test_forward_includes_original_attachment():
     FakeIMAP.messages["77"] = attachment_message_bytes()
     client = BridgeMailClient(settings(), imap_factory=FakeIMAP, smtp_factory=FakeSMTP)
@@ -431,6 +508,17 @@ def test_search_all_mail_deduplicates_message_ids():
 
     assert len(result["messages"]) == 1
     assert result["folders_searched"] == ["INBOX", "Archive"]
+
+
+def test_content_trust_marks_read_and_summary_results_untrusted():
+    FakeIMAP.messages["101"] = message_bytes()
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+
+    read = client.read_mail(message_id="101")
+    search = client.search_mail(limit=1)
+
+    assert read["content_trust"] == "untrusted"
+    assert search[0]["content_trust"] == "untrusted"
 
 
 def test_search_all_mail_validates_folders_and_global_limit():
@@ -455,6 +543,46 @@ def test_bulk_actions_and_empty_folder_use_explicit_uids():
     assert emptied["count"] == 2
     commands = [command for instance in FakeIMAP.instances for command in instance.commands]
     assert ("uid", "EXPUNGE", ("1,2",)) in commands
+
+
+def test_bulk_dry_run_validates_uids_without_mutating():
+    client = BridgeMailClient(settings(bulk_limit=3), imap_factory=FakeIMAP)
+
+    marked = client.bulk_mark_read(message_ids=["1", "2"], dry_run=True)
+    moved = client.bulk_move(message_ids=["1", "2"], destination_folder="Archive", dry_run=True)
+
+    assert marked == {
+        "dry_run": True,
+        "would_affect": ["1", "2"],
+        "count": 2,
+        "operation": "bulk_mark_read",
+    }
+    assert moved["dry_run"] is True
+    assert moved["operation"] == "bulk_move"
+    assert moved["destination_folder"] == "Archive"
+    assert FakeIMAP.instances == []
+
+
+def test_destructive_dry_run_reports_targets_without_mutating():
+    FakeIMAP.search_result = b"1 2"
+    client = BridgeMailClient(settings(), imap_factory=FakeIMAP)
+
+    single = client.permanently_delete_message(message_id="9", dry_run=True)
+    bulk = client.bulk_permanently_delete(message_ids=["1", "2"], dry_run=True)
+    emptied = client.empty_folder(folder="Trash", dry_run=True)
+
+    assert single == {
+        "dry_run": True,
+        "would_affect": ["9"],
+        "count": 1,
+        "operation": "permanently_delete_message",
+    }
+    assert bulk["operation"] == "bulk_permanently_delete"
+    assert bulk["would_affect"] == ["1", "2"]
+    assert emptied["operation"] == "empty_folder"
+    assert emptied["would_affect"] == ["1", "2"]
+    commands = [command for instance in FakeIMAP.instances for command in instance.commands]
+    assert not any(command[0] == "uid" and command[1] in {"STORE", "EXPUNGE"} for command in commands)
 
 
 def test_empty_trash_batches_expunges_at_bulk_limit():
@@ -634,10 +762,16 @@ def test_apply_label_copies_into_label_mailbox():
 
     result = client.apply_label(message_id="101", label="Receipts", folder="INBOX")
 
-    assert result == {"labeled": True, "message_ids": ["101"], "label": "Labels/Receipts", "folder": "INBOX"}
-    inst = FakeIMAP.instances[0]
-    assert ("uid", "COPY", ("101", '"Labels/Receipts"')) in inst.commands
-    assert ("select", '"INBOX"', False) in inst.commands  # writable select
+    assert result == {
+        "labeled": True,
+        "message_ids": ["101"],
+        "label": "Labels/Receipts",
+        "folder": "INBOX",
+        "verified": True,
+    }
+    commands = [command for instance in FakeIMAP.instances for command in instance.commands]
+    assert ("uid", "COPY", ("101", '"Labels/Receipts"')) in commands
+    assert ("select", '"INBOX"', False) in commands  # writable select
 
 
 def test_remove_label_expunges_copy_from_label_mailbox():

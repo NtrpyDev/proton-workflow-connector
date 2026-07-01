@@ -38,6 +38,7 @@ class MessageSummary:
     date: str | None
     message_id: str | None
     flags: list[str] = field(default_factory=list)
+    content_trust: str = "untrusted"
 
 
 def normalize_recipients(recipients: str | Iterable[str]) -> list[str]:

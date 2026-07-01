@@ -731,6 +731,26 @@ def test_run_watch_action_only_rule_runs_actions_without_delivery(tmp_path):
     assert store.get("triage") == (42, 7)
 
 
+def test_run_watch_dry_run_does_not_deliver_act_or_advance(tmp_path, caplog):
+    caplog.set_level("INFO", logger="proton_workflow_connector.watch")
+    client = RecordingClient(messages=[{"uid": "42", "subject": "hi"}])
+    store = CursorStore.load(tmp_path / "state.json")
+    store.set("triage", cursor_uid=41, uid_validity=7)
+    rule = WatchRule(
+        name="triage",
+        source="mail",
+        folder="INBOX",
+        actions=({"type": "mark_read"}, {"type": "archive"}),
+    )
+
+    count = run_watch(settings(), rules=[rule], client=client, store=store, dry_run=True)
+
+    assert count == 1
+    assert client.calls == []
+    assert store.get("triage") == (41, 7)
+    assert "would run action mark_read" in caplog.text
+
+
 def test_rules_file_rejects_move_plus_forward(tmp_path):
     path = tmp_path / "r.json"
     path.write_text(json.dumps([{"name": "a", "actions": [{"type": "archive"}, {"type": "forward", "to": "x@y.com"}]}]))

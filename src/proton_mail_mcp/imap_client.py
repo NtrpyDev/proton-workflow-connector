@@ -16,6 +16,7 @@ from email.utils import getaddresses, parseaddr, parsedate_to_datetime
 from typing import Any
 
 from .config import Settings
+from .html_sanitize import sanitize_html
 from .mail_models import AttachmentInfo, MessageSummary, build_message, decode_attachments, normalize_recipients
 from .redaction import redact_text
 
@@ -465,6 +466,29 @@ class BridgeMailClient:
             "content_base64": base64.b64encode(payload).decode("ascii"),
         }
 
+    def _prepare_html(self, html: str | None, trusted_html: bool) -> tuple[str | None, bool]:
+        """Sanitize outbound HTML unless the caller vouches for it. Returns (html, active_stripped)."""
+        if html is None or trusted_html:
+            return html, False
+        return sanitize_html(html)
+
+    @staticmethod
+    def _send_preview(message: Message, sender: str, recipients: Sequence[str], *, kind: str) -> dict[str, Any]:
+        return {
+            "dry_run": True,
+            "would_send": True,
+            "kind": kind,
+            "sender": sender,
+            "recipients": list(recipients),
+            "subject": _header(message, "Subject"),
+            "size_bytes": len(message.as_bytes()),
+        }
+
+    @staticmethod
+    def _dry_run_effect(uid_set: str, *, operation: str) -> dict[str, Any]:
+        uids = uid_set.split(",") if uid_set else []
+        return {"dry_run": True, "would_affect": uids, "count": len(uids), "operation": operation}
+
     def send_mail(
         self,
         *,
@@ -478,9 +502,12 @@ class BridgeMailClient:
         sender_name: str | None = None,
         from_address: str | None = None,
         attachments: Iterable[dict[str, Any]] | None = None,
+        dry_run: bool = False,
+        trusted_html: bool = False,
     ) -> dict[str, Any]:
         self.settings.require_bridge()
         sender = self._resolve_sender(from_address)
+        html, html_active = self._prepare_html(html, trusted_html)
         decoded_attachments = decode_attachments(
             attachments,
             max_count=self.settings.max_attachments,
@@ -505,8 +532,10 @@ class BridgeMailClient:
             recipients.extend(normalize_recipients(bcc))
             del message["Bcc"]
 
+        if dry_run:
+            return {**self._send_preview(message, sender, recipients, kind="send"), "html_sanitized": html_active}
         self._send_message(message, sender=sender, recipients=recipients)
-        return {"sent": True, "sender": sender, "recipients": recipients}
+        return {"sent": True, "sender": sender, "recipients": recipients, "html_sanitized": html_active}
 
     def _compose_reply(
         self,
@@ -519,16 +548,20 @@ class BridgeMailClient:
         sender_name: str | None,
         from_address: str | None,
         attachments: Iterable[dict[str, Any]] | None,
-    ) -> tuple[Message, str, list[str]]:
+        trusted_html: bool = False,
+    ) -> tuple[Message, str, list[str], bool]:
         _, original, _ = self._load_message(message_id=message_id, folder=folder, mark_seen=False)
         sender = self._resolve_sender(from_address)
         to, cc = self._reply_recipients(original, sender=sender, reply_all=reply_all)
         original_plain, _ = _extract_body(original, max_chars=self.settings.max_body_chars, content_type="text/plain")
         quoted_text = _quote_reply_text(text, original_plain, _header(original, "Date"), _header(original, "From"))
         quoted_html = None
+        html_active = False
         if html is not None:
             original_html, _ = _extract_body(original, max_chars=self.settings.max_body_chars, content_type="text/html")
             quoted_html = _quote_reply_html(html, original_html or original_plain, original_is_html=bool(original_html))
+            # The quoted original is attacker-influenced, so sanitize the whole composed body.
+            quoted_html, html_active = self._prepare_html(quoted_html, trusted_html)
         header_message_id = _header(original, "Message-ID")
         references = " ".join(value for value in [_header(original, "References"), header_message_id] if value) or None
         decoded_attachments = decode_attachments(
@@ -548,7 +581,7 @@ class BridgeMailClient:
             references=references,
             attachments=decoded_attachments,
         )
-        return message, sender, [*to, *cc]
+        return message, sender, [*to, *cc], html_active
 
     def reply_mail(
         self,
@@ -561,8 +594,10 @@ class BridgeMailClient:
         sender_name: str | None = None,
         from_address: str | None = None,
         attachments: Iterable[dict[str, Any]] | None = None,
+        dry_run: bool = False,
+        trusted_html: bool = False,
     ) -> dict[str, Any]:
-        message, sender, recipients = self._compose_reply(
+        message, sender, recipients, html_active = self._compose_reply(
             message_id=message_id,
             text=text,
             folder=folder,
@@ -571,9 +606,22 @@ class BridgeMailClient:
             sender_name=sender_name,
             from_address=from_address,
             attachments=attachments,
+            trusted_html=trusted_html,
         )
+        if dry_run:
+            return {
+                **self._send_preview(message, sender, recipients, kind="reply"),
+                "reply_all": reply_all,
+                "html_sanitized": html_active,
+            }
         self._send_message(message, sender=sender, recipients=recipients)
-        return {"sent": True, "reply_all": reply_all, "sender": sender, "recipients": recipients}
+        return {
+            "sent": True,
+            "reply_all": reply_all,
+            "sender": sender,
+            "recipients": recipients,
+            "html_sanitized": html_active,
+        }
 
     def draft_reply(
         self,
@@ -586,9 +634,10 @@ class BridgeMailClient:
         sender_name: str | None = None,
         from_address: str | None = None,
         attachments: Iterable[dict[str, Any]] | None = None,
+        trusted_html: bool = False,
     ) -> dict[str, Any]:
         """Compose a reply exactly like ``reply_mail`` but save it to Drafts instead of sending."""
-        message, sender, recipients = self._compose_reply(
+        message, sender, recipients, html_active = self._compose_reply(
             message_id=message_id,
             text=text,
             folder=folder,
@@ -597,6 +646,7 @@ class BridgeMailClient:
             sender_name=sender_name,
             from_address=from_address,
             attachments=attachments,
+            trusted_html=trusted_html,
         )
         saved = self._append_draft(message, folder=self.settings.drafts_folder)
         return {
@@ -605,6 +655,7 @@ class BridgeMailClient:
             "sender": sender,
             "recipients": recipients,
             "folder": saved["folder"],
+            "html_sanitized": html_active,
         }
 
     def forward_mail(
@@ -621,8 +672,10 @@ class BridgeMailClient:
         from_address: str | None = None,
         include_original_attachments: bool = True,
         attachments: Iterable[dict[str, Any]] | None = None,
+        dry_run: bool = False,
+        trusted_html: bool = False,
     ) -> dict[str, Any]:
-        message, sender, recipients = self._compose_forward(
+        message, sender, recipients, html_active = self._compose_forward(
             message_id=message_id,
             to=to,
             folder=folder,
@@ -634,9 +687,22 @@ class BridgeMailClient:
             from_address=from_address,
             include_original_attachments=include_original_attachments,
             attachments=attachments,
+            trusted_html=trusted_html,
         )
+        if dry_run:
+            return {
+                **self._send_preview(message, sender, recipients, kind="forward"),
+                "forwarded": True,
+                "html_sanitized": html_active,
+            }
         self._send_message(message, sender=sender, recipients=recipients)
-        return {"sent": True, "forwarded": True, "sender": sender, "recipients": recipients}
+        return {
+            "sent": True,
+            "forwarded": True,
+            "sender": sender,
+            "recipients": recipients,
+            "html_sanitized": html_active,
+        }
 
     def draft_forward(
         self,
@@ -652,9 +718,10 @@ class BridgeMailClient:
         from_address: str | None = None,
         include_original_attachments: bool = True,
         attachments: Iterable[dict[str, Any]] | None = None,
+        trusted_html: bool = False,
     ) -> dict[str, Any]:
         """Compose a forward exactly like ``forward_mail`` but save it to Drafts instead of sending."""
-        message, sender, recipients = self._compose_forward(
+        message, sender, recipients, html_active = self._compose_forward(
             message_id=message_id,
             to=to,
             folder=folder,
@@ -666,6 +733,7 @@ class BridgeMailClient:
             from_address=from_address,
             include_original_attachments=include_original_attachments,
             attachments=attachments,
+            trusted_html=trusted_html,
         )
         saved = self._append_draft(message, folder=self.settings.drafts_folder)
         return {
@@ -674,6 +742,7 @@ class BridgeMailClient:
             "sender": sender,
             "recipients": recipients,
             "folder": saved["folder"],
+            "html_sanitized": html_active,
         }
 
     def _compose_forward(
@@ -690,12 +759,14 @@ class BridgeMailClient:
         from_address: str | None,
         include_original_attachments: bool,
         attachments: Iterable[dict[str, Any]] | None,
-    ) -> tuple[Message, str, list[str]]:
+        trusted_html: bool = False,
+    ) -> tuple[Message, str, list[str], bool]:
         _, original, _ = self._load_message(message_id=message_id, folder=folder, mark_seen=False)
         sender = self._resolve_sender(from_address)
         original_plain, _ = _extract_body(original, max_chars=self.settings.max_body_chars, content_type="text/plain")
         forwarded_text = _forward_text(text, original, original_plain)
         forwarded_html = None
+        html_active = False
         if html is not None:
             original_html, _ = _extract_body(original, max_chars=self.settings.max_body_chars, content_type="text/html")
             forwarded_html = _forward_html(
@@ -704,6 +775,8 @@ class BridgeMailClient:
                 original_html or original_plain,
                 original_is_html=bool(original_html),
             )
+            # The forwarded original is attacker-influenced, so sanitize the whole composed body.
+            forwarded_html, html_active = self._prepare_html(forwarded_html, trusted_html)
         outgoing = list(attachments or [])
         if include_original_attachments:
             outgoing.extend(_parts_as_attachment_inputs(original))
@@ -729,7 +802,7 @@ class BridgeMailClient:
         if bcc:
             recipients.extend(normalize_recipients(bcc))
             del message["Bcc"]
-        return message, sender, recipients
+        return message, sender, recipients, html_active
 
     def create_draft(
         self,
@@ -744,9 +817,11 @@ class BridgeMailClient:
         from_address: str | None = None,
         sender_name: str | None = None,
         attachments: Iterable[dict[str, Any]] | None = None,
+        trusted_html: bool = False,
     ) -> dict[str, Any]:
         self.settings.require_bridge()
         sender = self._resolve_sender(from_address)
+        html, html_active = self._prepare_html(html, trusted_html)
         message = build_message(
             sender=sender,
             sender_name=sender_name,
@@ -762,7 +837,9 @@ class BridgeMailClient:
                 max_total_bytes=self.settings.max_outgoing_attachment_bytes,
             ),
         )
-        return self._append_draft(message, folder=folder or self.settings.drafts_folder)
+        result = self._append_draft(message, folder=folder or self.settings.drafts_folder)
+        result["html_sanitized"] = html_active
+        return result
 
     def _append_draft(self, message: Message, *, folder: str) -> dict[str, Any]:
         with self._imap() as conn:
@@ -786,6 +863,7 @@ class BridgeMailClient:
         from_address: str | None = None,
         sender_name: str | None = None,
         attachments: Iterable[dict[str, Any]] | None = None,
+        trusted_html: bool = False,
     ) -> dict[str, Any]:
         target = folder or self.settings.drafts_folder
         created = self.create_draft(
@@ -799,9 +877,15 @@ class BridgeMailClient:
             from_address=from_address,
             sender_name=sender_name,
             attachments=attachments,
+            trusted_html=trusted_html,
         )
         self._delete_draft_and_confirm(message_id=message_id, folder=target)
-        return {"updated": True, "old_message_id": message_id, "new_draft": created}
+        return {
+            "updated": True,
+            "old_message_id": message_id,
+            "new_draft": created,
+            "html_sanitized": created.get("html_sanitized", False),
+        }
 
     def delete_draft(self, *, message_id: str, folder: str | None = None) -> dict[str, Any]:
         return self.permanently_delete_message(message_id=message_id, folder=folder or self.settings.drafts_folder)
@@ -876,11 +960,19 @@ class BridgeMailClient:
         """Add a Proton label to a message by copying it into the label mailbox; it stays in ``folder``."""
         uid = _validate_uid(message_id)
         mailbox = self._label_mailbox(label)
+        _, message, _ = self._load_message(message_id=uid, folder=folder, mark_seen=False)
+        header_message_id = _header(message, "Message-ID")
         with self._imap() as conn:
             self._select(conn, folder, readonly=False)
             status, data = conn.uid("COPY", uid, _mailbox_arg(mailbox))
             _require_ok(status, data)
-        return {"labeled": True, "message_ids": [uid], "label": mailbox, "folder": folder}
+            verified = False
+            if header_message_id:
+                self._select(conn, mailbox, readonly=True)
+                status, data = conn.uid("SEARCH", None, "HEADER", "MESSAGE-ID", _quote_search_value(header_message_id))
+                _require_ok(status, data)
+                verified = bool(_split_uid_data(data))
+        return {"labeled": True, "message_ids": [uid], "label": mailbox, "folder": folder, "verified": verified}
 
     def remove_label(self, *, message_id: str, label: str, folder: str = "INBOX") -> dict[str, Any]:
         """Remove a Proton label by expunging the message's copy from the label mailbox.
@@ -940,8 +1032,12 @@ class BridgeMailClient:
             destination_folder=destination_folder,
         )
 
-    def permanently_delete_message(self, *, message_id: str, folder: str = "INBOX") -> dict[str, Any]:
+    def permanently_delete_message(
+        self, *, message_id: str, folder: str = "INBOX", dry_run: bool = False
+    ) -> dict[str, Any]:
         uid = _validate_uid(message_id)
+        if dry_run:
+            return self._dry_run_effect(uid, operation="permanently_delete_message")
         if folder.casefold() == self.settings.trash_folder.casefold():
             self._expunge_uid_set(uid, folder=folder)
             return {"permanently_deleted": True, "message_ids": [uid], "via_folder": folder}
@@ -967,37 +1063,83 @@ class BridgeMailClient:
             "via_folder": self.settings.trash_folder,
         }
 
-    def bulk_mark_read(self, *, message_ids: Sequence[str], folder: str = "INBOX") -> dict[str, Any]:
+    def bulk_mark_read(
+        self, *, message_ids: Sequence[str], folder: str = "INBOX", dry_run: bool = False
+    ) -> dict[str, Any]:
         return self._bulk_store(
-            message_ids, folder=folder, operation="+FLAGS.SILENT", flags="(\\Seen)", action="marked_read"
+            message_ids,
+            folder=folder,
+            operation="+FLAGS.SILENT",
+            flags="(\\Seen)",
+            action="marked_read",
+            dry_run=dry_run,
+            dry_run_operation="bulk_mark_read",
         )
 
-    def bulk_mark_unread(self, *, message_ids: Sequence[str], folder: str = "INBOX") -> dict[str, Any]:
+    def bulk_mark_unread(
+        self, *, message_ids: Sequence[str], folder: str = "INBOX", dry_run: bool = False
+    ) -> dict[str, Any]:
         return self._bulk_store(
-            message_ids, folder=folder, operation="-FLAGS.SILENT", flags="(\\Seen)", action="marked_unread"
+            message_ids,
+            folder=folder,
+            operation="-FLAGS.SILENT",
+            flags="(\\Seen)",
+            action="marked_unread",
+            dry_run=dry_run,
+            dry_run_operation="bulk_mark_unread",
         )
 
-    def bulk_star(self, *, message_ids: Sequence[str], folder: str = "INBOX") -> dict[str, Any]:
+    def bulk_star(self, *, message_ids: Sequence[str], folder: str = "INBOX", dry_run: bool = False) -> dict[str, Any]:
         return self._bulk_store(
-            message_ids, folder=folder, operation="+FLAGS.SILENT", flags="(\\Flagged)", action="starred"
+            message_ids,
+            folder=folder,
+            operation="+FLAGS.SILENT",
+            flags="(\\Flagged)",
+            action="starred",
+            dry_run=dry_run,
+            dry_run_operation="bulk_star",
         )
 
-    def bulk_unstar(self, *, message_ids: Sequence[str], folder: str = "INBOX") -> dict[str, Any]:
+    def bulk_unstar(
+        self, *, message_ids: Sequence[str], folder: str = "INBOX", dry_run: bool = False
+    ) -> dict[str, Any]:
         return self._bulk_store(
-            message_ids, folder=folder, operation="-FLAGS.SILENT", flags="(\\Flagged)", action="unstarred"
+            message_ids,
+            folder=folder,
+            operation="-FLAGS.SILENT",
+            flags="(\\Flagged)",
+            action="unstarred",
+            dry_run=dry_run,
+            dry_run_operation="bulk_unstar",
         )
 
     def bulk_move(
-        self, *, message_ids: Sequence[str], destination_folder: str, folder: str = "INBOX"
+        self, *, message_ids: Sequence[str], destination_folder: str, folder: str = "INBOX", dry_run: bool = False
     ) -> dict[str, Any]:
         uid_set = _validate_uid_list(message_ids, self.settings.bulk_limit)
+        if dry_run:
+            result = self._dry_run_effect(uid_set, operation="bulk_move")
+            result["destination_folder"] = destination_folder
+            return result
         return self._move_uid_set(uid_set, destination_folder=destination_folder, folder=folder)
 
-    def bulk_archive(self, *, message_ids: Sequence[str], folder: str = "INBOX") -> dict[str, Any]:
-        return self.bulk_move(message_ids=message_ids, folder=folder, destination_folder=self.settings.archive_folder)
+    def bulk_archive(
+        self, *, message_ids: Sequence[str], folder: str = "INBOX", dry_run: bool = False
+    ) -> dict[str, Any]:
+        return self.bulk_move(
+            message_ids=message_ids,
+            folder=folder,
+            destination_folder=self.settings.archive_folder,
+            dry_run=dry_run,
+        )
 
-    def bulk_trash(self, *, message_ids: Sequence[str], folder: str = "INBOX") -> dict[str, Any]:
-        return self.bulk_move(message_ids=message_ids, folder=folder, destination_folder=self.settings.trash_folder)
+    def bulk_trash(self, *, message_ids: Sequence[str], folder: str = "INBOX", dry_run: bool = False) -> dict[str, Any]:
+        return self.bulk_move(
+            message_ids=message_ids,
+            folder=folder,
+            destination_folder=self.settings.trash_folder,
+            dry_run=dry_run,
+        )
 
     def bulk_restore(
         self,
@@ -1005,17 +1147,23 @@ class BridgeMailClient:
         message_ids: Sequence[str],
         folder: str | None = None,
         destination_folder: str = "INBOX",
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         return self.bulk_move(
             message_ids=message_ids,
             folder=folder or self.settings.trash_folder,
             destination_folder=destination_folder,
+            dry_run=dry_run,
         )
 
     def bulk_copy(
-        self, *, message_ids: Sequence[str], destination_folder: str, folder: str = "INBOX"
+        self, *, message_ids: Sequence[str], destination_folder: str, folder: str = "INBOX", dry_run: bool = False
     ) -> dict[str, Any]:
         uid_set = _validate_uid_list(message_ids, self.settings.bulk_limit)
+        if dry_run:
+            result = self._dry_run_effect(uid_set, operation="bulk_copy")
+            result["destination_folder"] = destination_folder
+            return result
         with self._imap() as conn:
             self._select(conn, folder, readonly=False)
             status, data = conn.uid("COPY", uid_set, _mailbox_arg(destination_folder))
@@ -1027,9 +1175,13 @@ class BridgeMailClient:
                 "destination_folder": destination_folder,
             }
 
-    def bulk_permanently_delete(self, *, message_ids: Sequence[str], folder: str = "INBOX") -> dict[str, Any]:
+    def bulk_permanently_delete(
+        self, *, message_ids: Sequence[str], folder: str = "INBOX", dry_run: bool = False
+    ) -> dict[str, Any]:
         uid_set = _validate_uid_list(message_ids, self.settings.bulk_limit)
         uids = uid_set.split(",")
+        if dry_run:
+            return self._dry_run_effect(uid_set, operation="bulk_permanently_delete")
         if folder.casefold() == self.settings.trash_folder.casefold():
             self._expunge_uid_set(uid_set, folder=folder)
         else:
@@ -1037,12 +1189,16 @@ class BridgeMailClient:
                 self.permanently_delete_message(message_id=uid, folder=folder)
         return {"permanently_deleted": True, "message_ids": uids, "count": len(uids)}
 
-    def empty_folder(self, *, folder: str) -> dict[str, Any]:
+    def empty_folder(self, *, folder: str, dry_run: bool = False) -> dict[str, Any]:
         with self._imap() as conn:
-            self._select(conn, folder, readonly=False)
+            self._select(conn, folder, readonly=dry_run)
             status, data = conn.uid("SEARCH", None, "ALL")
             _require_ok(status, data)
             uids = _split_uid_data(data)
+        if dry_run:
+            result = self._dry_run_effect(",".join(uids), operation="empty_folder")
+            result["folder"] = folder
+            return result
         if not uids:
             return {"emptied": True, "folder": folder, "count": 0}
         if folder.casefold() != self.settings.trash_folder.casefold():
@@ -1228,17 +1384,41 @@ class BridgeMailClient:
             self._select(conn, folder, readonly=False)
             status, data = conn.uid("STORE", uid, operation, flags)
             _require_ok(status, data)
-            return {"updated": True, "message_ids": [uid], "operation": operation, "flags": flags}
+            current_flags = self._fetch_flags(conn, uid)
+        expected_flag = _single_flag(flags)
+        verified = expected_flag in current_flags if operation.startswith("+") else expected_flag not in current_flags
+        return {
+            "updated": True,
+            "message_ids": [uid],
+            "operation": operation,
+            "flags": current_flags,
+            "verified": verified,
+        }
 
     def _bulk_store(
-        self, message_ids: Sequence[str], *, folder: str, operation: str, flags: str, action: str
+        self,
+        message_ids: Sequence[str],
+        *,
+        folder: str,
+        operation: str,
+        flags: str,
+        action: str,
+        dry_run: bool = False,
+        dry_run_operation: str = "",
     ) -> dict[str, Any]:
         uid_set = _validate_uid_list(message_ids, self.settings.bulk_limit)
+        if dry_run:
+            return self._dry_run_effect(uid_set, operation=dry_run_operation or f"bulk_{action}")
         with self._imap() as conn:
             self._select(conn, folder, readonly=False)
             status, data = conn.uid("STORE", uid_set, operation, flags)
             _require_ok(status, data)
             return {action: True, "message_ids": uid_set.split(","), "count": len(uid_set.split(","))}
+
+    def _fetch_flags(self, conn: Any, uid: str) -> list[str]:
+        status, data = conn.uid("FETCH", uid, "(FLAGS)")
+        _require_ok(status, data)
+        return _extract_flags(data)
 
     def _move_uid_set(self, uid_set: str, *, destination_folder: str, folder: str) -> dict[str, Any]:
         with self._imap() as conn:
@@ -1307,6 +1487,7 @@ class BridgeMailClient:
             "in_reply_to": _header(message, "In-Reply-To"),
             "references": _header(message, "References"),
             "flags": flags,
+            "content_trust": "untrusted",
             "body": body,
             "body_truncated": body_truncated,
             "attachments": [asdict(attachment) for attachment in _attachments(message)],
@@ -1485,6 +1666,13 @@ def _extract_flags(data: Any) -> list[str]:
     if not match:
         return []
     return [flag.decode("ascii", errors="replace") for flag in match.group(1).split()]
+
+
+def _single_flag(flags: str) -> str:
+    parsed = _extract_flags([f"FLAGS {flags}".encode("ascii", errors="replace")])
+    if not parsed:
+        raise ValueError(f"Could not parse IMAP flag expression: {flags!r}")
+    return parsed[0]
 
 
 def _header(message: Message, name: str) -> str | None:

@@ -2,6 +2,17 @@
 
 All notable changes to this project are recorded here. Versions follow [semantic versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- Dry-run previews for send/reply/forward, bulk operations, permanent delete, empty-folder operations,
+  and watcher rules.
+- Dependency-free outbound HTML sanitization with `html_sanitized` result markers and a
+  `trusted_html` opt-out for caller-controlled HTML.
+- `content_trust: "untrusted"` markers on read/search message payloads.
+- Post-operation verification for message flags and label application.
+
 ## 1.1.0 — 2026-07-01
 
 Turns the watcher into a real workflow layer: more event sources, flexible delivery, and reliable

@@ -14,7 +14,7 @@ This is an unofficial project. It is not affiliated with, endorsed by, or sponso
 ## Why use it?
 
 - **One mail workflow:** search, read, send, reply, forward, draft, label, archive, and manage attachments through 53 Proton Mail tools.
-- **Agent-aware safeguards:** destructive tools require explicit confirmation, bulk operations are bounded, and sender addresses are allowlisted.
+- **Agent-aware safeguards:** destructive tools require explicit confirmation, dry-run previews are available for sends and destructive operations, outbound HTML is sanitized by default, bulk operations are bounded, and sender addresses are allowlisted.
 - **Real automations:** react to new mail or SimpleLogin aliases through MCP polling or a background watcher with webhook, JSONL, or command delivery.
 - **Optional SimpleLogin support:** manage aliases, contacts, and mailboxes through 13 additional tools.
 - **Local-first or hosted:** connect over stdio, localhost Streamable HTTP, or OAuth-protected hosted HTTP.
@@ -124,7 +124,7 @@ The connector returns structured data to the MCP client. The client decides how 
 | Search and reading | Search one folder or all selectable folders, read messages and threads, inspect headers, and download attachments |
 | Sending and drafts | Send, reply, reply-all, forward, create and update drafts, use allowed alternate senders, and attach files |
 | Organization | Create and manage folders, apply Proton labels, change flags, archive, move, copy, restore, and manage Spam or Trash |
-| Bounded bulk actions | Mark, star, move, copy, archive, trash, restore, or permanently delete explicit UID lists |
+| Bounded bulk actions | Preview, mark, star, move, copy, archive, trash, restore, or permanently delete explicit UID lists |
 | Automations | Poll persistent cursors or push new-message and new-alias events to a webhook, JSONL file, or command |
 | SimpleLogin | Inspect account data and manage aliases, contacts, and mailboxes with an optional API key |
 | Deployment | Local stdio, localhost Streamable HTTP, or OAuth/OIDC-protected hosted HTTP |
@@ -151,6 +151,7 @@ Key behavior:
 - An optional HMAC-SHA256 signature lets webhook receivers verify each event.
 - Events contain message metadata only; bodies and attachments remain available on demand through MCP tools.
 - JSON rules can run several independently filtered triggers from one watcher.
+- `--dry-run` shows which events and rule actions would fire without delivering, acting, or advancing cursors.
 
 Read [Triggers and webhooks](docs/WATCH.md) for event schemas, filters, delivery guarantees, signature verification, rules, and systemd examples.
 
@@ -161,6 +162,8 @@ This connector processes private mail. Its defaults and boundaries are intention
 - **Prefer local stdio.** Bridge and the connector should stay on the same trusted machine whenever possible.
 - **Keep credentials private.** Store Bridge-generated credentials and optional API keys outside Git with user-only permissions.
 - **Confirm destructive actions.** Permanent deletion, empty-folder operations, folder deletion, and alias deletion require `confirm=true` after explicit user intent.
+- **Preview before mutating.** Sends, forwards, replies, bulk actions, permanent delete, and empty-folder operations support `dry_run=true` previews.
+- **Treat mail as untrusted.** Read/search results mark email content as `content_trust: "untrusted"`, and outbound HTML is sanitized unless `trusted_html=true`.
 - **Bound bulk operations.** Bulk tools require explicit numeric UIDs and default to a maximum of 50 messages per call.
 - **Restrict senders.** Mail can only be sent from `PROTON_BRIDGE_EMAIL` or an address in `PROTON_BRIDGE_SENDER_ADDRESSES`.
 - **Protect remote access.** Non-local HTTP deployments require deliberate Host/Origin policy; internet deployments require HTTPS and an external OAuth/OIDC provider.

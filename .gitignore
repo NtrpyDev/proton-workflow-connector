@@ -46,3 +46,4 @@ deploy.local.*
 
 # Local work-order, not part of the project
 AGENT_BRIEF.md
+HANDOFF.md

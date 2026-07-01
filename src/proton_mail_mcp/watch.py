@@ -675,6 +675,7 @@ def run_watch(
     once: bool = False,
     sink: Sink | None = None,
     command_runner: Callable[[Sequence[str], bytes, float], tuple[int, str]] | None = None,
+    dry_run: bool = False,
 ) -> int:
     """Run the polling loop. ``sink`` overrides the configured delivery target. Returns events delivered.
 
@@ -683,6 +684,8 @@ def run_watch(
     written to the dead-letter file and the cursor advances past it, so one poison event can never
     stall a source forever.
     """
+    if dry_run:
+        once = True
     rules = list(rules) if rules is not None else rules_from_config(settings)
     if not rules:
         raise RuntimeError("No watch rules configured")
@@ -695,14 +698,17 @@ def run_watch(
         simplelogin = simplelogin or SimpleLoginClient(settings)
 
     store = store or CursorStore.load(default_state_path(settings))
-    sinks = {rule.name: _build_rule_sink(settings, rule, sink, command_runner) for rule in rules}
+    sinks = {} if dry_run else {rule.name: _build_rule_sink(settings, rule, sink, command_runner) for rule in rules}
 
     dead_letter_path = default_dead_letter_path(settings)
     max_attempts = max(settings.watch_dead_letter_max_attempts, 1)
 
     total = 0
     interval = max(settings.watch_poll_interval, 1.0)
-    logger.info("Watching %d source(s) every %.0fs", len(rules), interval)
+    if dry_run:
+        logger.info("Dry-run watching %d source(s); cursors, sinks, and actions will not be changed", len(rules))
+    else:
+        logger.info("Watching %d source(s) every %.0fs", len(rules), interval)
     while True:
         for rule in rules:
             try:
@@ -712,6 +718,9 @@ def run_watch(
                 continue
 
             events = outcome["events"]
+            if dry_run:
+                total += _log_dry_run_rule(rule, outcome)
+                continue
             # For baseline, reset, or an empty poll there is nothing to deliver: commit the head.
             if not events:
                 store.set(rule.name, cursor_uid=outcome["commit_cursor"], uid_validity=outcome["uid_validity"])
@@ -732,6 +741,32 @@ def run_watch(
         if once:
             return total
         _wait_between_cycles(settings, client, rules, interval)
+
+
+def _log_dry_run_rule(rule: WatchRule, outcome: Mapping[str, Any]) -> int:
+    """Log what a rule would emit or mutate without delivering, acting, or advancing cursors."""
+    events = outcome["events"]
+    if not events:
+        logger.info(
+            "Dry run: rule %r would emit 0 event(s); cursor would advance to %s",
+            rule.name,
+            outcome["commit_cursor"],
+        )
+        return 0
+    for event in events:
+        uid = event.get("message", {}).get("uid") if isinstance(event.get("message"), Mapping) else None
+        alias_id = event.get("alias", {}).get("id") if isinstance(event.get("alias"), Mapping) else None
+        target = f"uid {uid}" if uid is not None else f"alias {alias_id}" if alias_id is not None else "item"
+        logger.info("Dry run: rule %r would emit %s for %s", rule.name, event.get("type"), target)
+        for action in rule.actions:
+            logger.info("Dry run: rule %r would run action %s for %s", rule.name, action["type"], target)
+    logger.info(
+        "Dry run: rule %r would advance cursor from %s to %s",
+        rule.name,
+        outcome["prior_cursor"],
+        outcome["cursors"][-1],
+    )
+    return len(events)
 
 
 def _wait_between_cycles(
@@ -845,6 +880,11 @@ def main(argv: Sequence[str] | None = None) -> None:
     )
     parser.add_argument("--unread-only", action="store_true", help="Only emit events for unread messages.")
     parser.add_argument("--once", action="store_true", help="Poll a single time and exit (useful for cron).")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Poll once and log what would emit or act without delivering events or advancing cursors.",
+    )
     parser.add_argument("--state-path", help="Override the cursor state file location.")
     parser.add_argument("--log-level", default="INFO")
     args = parser.parse_args(argv)
@@ -899,8 +939,10 @@ def main(argv: Sequence[str] | None = None) -> None:
         return
 
     try:
-        count = run_watch(settings, once=args.once)
-        if args.once:
+        count = run_watch(settings, once=args.once or args.dry_run, dry_run=args.dry_run)
+        if args.dry_run:
+            logger.info("Dry run found %d event(s) that would be delivered", count)
+        elif args.once:
             logger.info("Delivered %d event(s)", count)
     except KeyboardInterrupt:
         pass

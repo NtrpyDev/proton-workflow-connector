@@ -57,6 +57,15 @@ proton-workflow-watch \
   --interval 60
 ```
 
+Preview a watcher run without delivering events, running actions, or advancing cursors:
+
+```bash
+proton-workflow-watch \
+  --env-file ~/.config/proton-workflow-connector/env \
+  --rules ./rules.json \
+  --dry-run
+```
+
 Everything is also configurable through the environment (see `.env.example`):
 
 | Variable | Meaning |
@@ -119,6 +128,9 @@ target just acts.
 Available actions: `mark_read`, `mark_unread`, `star`, `unstar`, `label`, `remove_label`, `archive`,
 `trash`, `move` (needs `folder`), and `forward` (needs `to`, optional `text`). `label`/`remove_label`
 need a `label`. Permanent deletion is intentionally not available as an auto-action.
+
+Use `--dry-run` after editing rules. It polls once and logs the events and actions that would fire,
+but it does not deliver to sinks, run actions, or write cursor state.
 
 Ordering is chosen for reliability under at-least-once delivery: flag/label actions run first, then
 the sink delivers, then moves run (so a delivery failure can never move the message out from under a
@@ -189,7 +201,8 @@ header:
     "to": "you@proton.me",
     "date": "Tue, 01 Jul 2026 09:12:00 +0000",
     "message_id": "<...@vendor.example>",
-    "flags": ["\\Seen"]
+    "flags": ["\\Seen"],
+    "content_trust": "untrusted"
   },
   "timestamp": 1751360000
 }
@@ -279,8 +292,9 @@ program per event, so a few boundaries are worth stating plainly:
   its `actions` move, label, or forward your mail with your account's access, so treat a rules file
   like a config secret: don't load one from a source you don't control.
 - **Events carry attacker-influenced content.** Anyone can email you a subject line or create an
-  alias name, and that text ends up in the event payload. Whatever consumes the event — your webhook
-  receiver, log pipeline, or command — should treat event fields as untrusted input.
+  alias name, and that text ends up in the event payload. Mail message payloads include
+  `content_trust: "untrusted"` for this reason. Whatever consumes the event — your webhook receiver,
+  log pipeline, or command — should treat event fields as data, not instructions.
 
 ## Limitations
 

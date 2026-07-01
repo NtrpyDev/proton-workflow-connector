@@ -52,6 +52,35 @@ def test_destructive_tools_expose_confirmation_field():
         assert "confirm" in tool_schemas[name]["properties"]
 
 
+def test_safety_parameters_are_exposed_in_tool_schemas():
+    async def schemas():
+        return {tool.name: tool.inputSchema for tool in await build_server().list_tools()}
+
+    tool_schemas = asyncio.run(schemas())
+
+    for name in {"send_mail", "reply_mail", "reply_all", "forward_mail"}:
+        assert "dry_run" in tool_schemas[name]["properties"]
+        assert "trusted_html" in tool_schemas[name]["properties"]
+    for name in {"create_draft", "draft_reply", "draft_forward", "update_draft"}:
+        assert "trusted_html" in tool_schemas[name]["properties"]
+    for name in {
+        "bulk_mark_read",
+        "bulk_mark_unread",
+        "bulk_star",
+        "bulk_unstar",
+        "bulk_move",
+        "bulk_copy",
+        "bulk_archive",
+        "bulk_trash",
+        "bulk_restore",
+        "bulk_permanently_delete",
+        "permanently_delete_message",
+        "empty_trash",
+        "empty_spam",
+    }:
+        assert "dry_run" in tool_schemas[name]["properties"]
+
+
 def test_confirmation_is_required():
     with pytest.raises(ValueError, match="confirm=true"):
         _require_confirmation(False, "delete")
