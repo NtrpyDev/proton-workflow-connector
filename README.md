@@ -90,35 +90,6 @@ startup_timeout_sec = 20
 tool_timeout_sec = 120
 ```
 
-## Keeping private data out of Git
-
-Do not commit real credentials, Bridge passwords, SimpleLogin API keys, mailbox exports, message bodies, screenshots, logs, private hostnames, or private IPs. Keep local setup notes outside this repo or in ignored private files.
-
-The repository has a few safeguards for this:
-
-- `.env.example` with fake placeholder values only.
-- `.gitignore` rules for local config, logs, caches, mailbox exports, and private notes.
-- Local pre-commit hooks for Ruff and Gitleaks.
-- CI for lint/tests and PR secret scanning.
-- A release checklist in [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
-
-## Development checks
-
-```bash
-python -m pip install -e ".[dev]"
-ruff check .
-ruff format --check .
-pytest
-python -m compileall -q src
-pip-audit
-```
-
-If Gitleaks is installed, scan for secrets too:
-
-```bash
-gitleaks detect --redact --config .gitleaks.toml
-```
-
 ## License
 
 MIT. See [LICENSE](LICENSE).
