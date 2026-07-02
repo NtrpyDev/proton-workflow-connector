@@ -82,6 +82,7 @@ SIMPLELOGIN_POLICIES = {
     "list_aliases": OperationPolicy("simplelogin.read", "read"),
     "poll_aliases": OperationPolicy("simplelogin.read", "read"),
     "get_alias": OperationPolicy("simplelogin.read", "read"),
+    "get_alias_options": OperationPolicy("simplelogin.read", "read"),
     "list_alias_contacts": OperationPolicy("simplelogin.read", "read"),
     "list_mailboxes": OperationPolicy("simplelogin.read", "read"),
     "create_random_alias": OperationPolicy("simplelogin.write", "write"),
@@ -116,7 +117,12 @@ class OperationGuard:
             raise PermissionError(f"{name!r} ({policy.category}) is not in PROTON_MCP_ALLOWED_ACTIONS ({allowed})")
 
     def invoke(self, policy: OperationPolicy, name: str, function, args: tuple[Any, ...], kwargs: dict[str, Any]):
-        self._enforce_mode(policy, name, kwargs)
+        try:
+            self._enforce_mode(policy, name, kwargs)
+        except PermissionError as exc:
+            # Blocked operations are audit-worthy events: record what was refused and why.
+            self._audit("local", policy, name, kwargs, outcome="blocked", error=str(exc))
+            raise
         actor = self._authorize_and_limit(policy)
         try:
             result = function(*args, **kwargs)

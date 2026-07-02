@@ -24,7 +24,7 @@ Use one local server for the mail work agents usually have to piece together:
 - Add 13 SimpleLogin tools when you want alias, contact, and mailbox management.
 - Connect over stdio, localhost Streamable HTTP, or OAuth-protected hosted HTTP.
 
-The server exposes 67 tools in total. See the [complete tool reference](docs/TOOLS.md).
+The server exposes 68 tools in total. See the [complete tool reference](docs/TOOLS.md).
 
 ## How it works
 
@@ -193,7 +193,7 @@ Read [SECURITY.md](SECURITY.md) before using real mail and [Hosted HTTP setup](d
 | Guide | Use it for |
 | --- | --- |
 | [Setup](docs/SETUP.md) | Bridge configuration, private environment files, folder names, and network modes |
-| [Tool reference](docs/TOOLS.md) | All 67 MCP tools, arguments, safety limits, and boundaries |
+| [Tool reference](docs/TOOLS.md) | All 68 MCP tools, arguments, safety limits, and boundaries |
 | [Client setup](docs/CLIENTS.md) | Generic MCP clients, local agents, Codex, Claude Code, plugins, and Streamable HTTP |
 | [Triggers and webhooks](docs/WATCH.md) | Watcher rules, payloads, delivery behavior, and signature verification |
 | [Hosted HTTP](docs/HOSTING.md) | OAuth/OIDC, HTTPS, Host/Origin validation, scopes, audit logs, and systemd |

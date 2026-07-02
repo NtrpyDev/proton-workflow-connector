@@ -1,6 +1,6 @@
 # Tool reference
 
-This connector exposes 67 MCP tools: 53 for Proton Mail through Bridge, 13 for SimpleLogin, and one status tool.
+This connector exposes 68 MCP tools: 53 for Proton Mail through Bridge, 14 for SimpleLogin, and one status tool.
 
 ## Folders
 
@@ -106,6 +106,9 @@ because they do not mutate mail.
 - `simplelogin_user_info` and `simplelogin_stats`
 - `simplelogin_list_aliases` and `simplelogin_get_alias`
 - `simplelogin_create_random_alias` and `simplelogin_create_custom_alias`
+- `simplelogin_get_alias_options`: List available custom-alias suffixes, including the
+  `signed_suffix` that `simplelogin_create_custom_alias` requires. Signatures expire after a
+  few minutes, so fetch options immediately before creating.
 - `simplelogin_update_alias` and `simplelogin_toggle_alias`
 - `simplelogin_delete_alias`: Delete an alias after `confirm=true`.
 - `simplelogin_list_alias_contacts` and `simplelogin_create_alias_contact`

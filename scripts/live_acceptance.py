@@ -108,6 +108,7 @@ SUITE_TOOLS = {
         "simplelogin_list_mailboxes",
         "simplelogin_list_aliases",
         "simplelogin_get_alias",
+        "simplelogin_get_alias_options",
         "simplelogin_create_random_alias",
         "simplelogin_create_custom_alias",
         "simplelogin_update_alias",
@@ -190,11 +191,15 @@ class Harness:
         print(f"{status}: {name}" + (f" — {entry.get('detail')}" if detail else ""), flush=True)
 
     async def search(self, folder: str, *, attempts: int = 1, query: str | None = None) -> list[dict[str, Any]]:
-        for _ in range(attempts):
+        # Local IMAP SEARCH is cheap and most arrivals land within seconds, so poll fast
+        # first and back off; "attempts" keeps its old meaning of ~2s each for callers.
+        delays = [0.5, 0.5, 1.0] + [2.0] * max(attempts - 2, 0)
+        for index, delay in enumerate(delays):
             rows = await self.call("search_mail", {"folder": folder, "query": query or self.marker, "limit": 100})
             if rows:
                 return rows
-            await asyncio.sleep(2)
+            if index < len(delays) - 1:
+                await asyncio.sleep(delay)
         return []
 
     def with_sender(self, arguments: dict[str, Any]) -> dict[str, Any]:
@@ -631,6 +636,11 @@ class Harness:
             {"confirm": False},
             "empty_trash without confirm must be rejected",
         )
+        await self.expect_error(
+            "empty_spam",
+            {"confirm": False},
+            "empty_spam without confirm must be rejected",
+        )
 
     async def _empty_folders(self) -> None:
         for tool, folder in (("empty_trash", "Trash"), ("empty_spam", "Spam")):
@@ -692,17 +702,17 @@ class Harness:
             await self.call("simplelogin_delete_alias", {"alias_id": alias_id, "confirm": True})
 
     async def _sl_custom_alias(self) -> None:
-        if not self.args.sl_signed_suffix:
-            raise EnvironmentIncomplete(
-                "no --sl-signed-suffix provided. PWC exposes no way to fetch alias options, so "
-                "MCP-only users cannot call simplelogin_create_custom_alias at all — product gap; "
-                "consider a simplelogin_get_alias_options tool"
-            )
+        # Signed suffixes expire minutes after minting, so fetch options right before creating.
+        options = await self.call("simplelogin_get_alias_options", {})
+        suffixes = options.get("suffixes") or []
+        signed = self.args.sl_signed_suffix or (suffixes[0].get("signed_suffix") if suffixes else None)
+        if not signed:
+            raise CheckFailure("simplelogin_get_alias_options returned no usable suffixes")
         created = await self.call(
             "simplelogin_create_custom_alias",
             {
                 "alias_prefix": f"pwc-live-{int(time.time())}",
-                "signed_suffix": self.args.sl_signed_suffix,
+                "signed_suffix": signed,
                 "mailbox_ids": [self._sl_mailbox_id],
                 "note": self.marker,
             },
@@ -927,11 +937,15 @@ class Harness:
                 "safety: suite", INCOMPLETE, "needs --env-file with Bridge creds on this host", time.monotonic()
             )
             return
-        await self.check("safety: read-only mode", self._safety_read_only())
-        await self.check("safety: sends disabled", self._safety_no_send())
-        await self.check("safety: allowed action categories", self._safety_allowed_actions())
-        await self.check("safety: read rate limit", self._safety_rate_limit())
-        await self.check("safety: audit log written and redacted", self._safety_audit())
+        # The five checks are independent — each spawns its own server on its own port —
+        # so run them concurrently: wall time becomes the slowest check, not the sum.
+        await asyncio.gather(
+            self.check("safety: read-only mode", self._safety_read_only(port=8790)),
+            self.check("safety: sends disabled", self._safety_no_send(port=8791)),
+            self.check("safety: allowed action categories", self._safety_allowed_actions(port=8792)),
+            self.check("safety: read rate limit", self._safety_rate_limit(port=8793)),
+            self.check("safety: audit log written and redacted", self._safety_audit(port=8794)),
+        )
 
     async def _spawn_server(self, port: int, extra_env: dict[str, str]):
         env = dict(os.environ)
@@ -952,7 +966,7 @@ class Harness:
             stdout=asyncio.subprocess.DEVNULL,
             stderr=asyncio.subprocess.DEVNULL,
         )
-        for _ in range(40):
+        for _ in range(80):
             try:
                 async with httpx.AsyncClient(timeout=2) as client:
                     await client.get(f"http://127.0.0.1:{port}/mcp")
@@ -960,12 +974,11 @@ class Harness:
             except httpx.TransportError:
                 if proc.returncode is not None:
                     raise CheckFailure(f"server exited {proc.returncode} during startup") from None
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(0.25)
         proc.terminate()
         raise CheckFailure("spawned server never opened its port")
 
-    async def _with_server(self, extra_env: dict[str, str], checks, token: str | None = None) -> None:
-        port = 8790
+    async def _with_server(self, extra_env: dict[str, str], checks, token: str | None = None, port: int = 8790) -> None:
         proc = await self._spawn_server(port, extra_env)
         url = f"http://127.0.0.1:{port}/mcp"
         try:
@@ -989,7 +1002,7 @@ class Harness:
         result = await asyncio.wait_for(session.call_tool(name, arguments or {}), timeout=self.args.timeout)
         return result
 
-    async def _safety_read_only(self) -> None:
+    async def _safety_read_only(self, port: int = 8790) -> None:
         async def checks(session: ClientSession) -> None:
             ok = await self._session_call(session, "list_folders")
             if ok.isError:
@@ -1005,9 +1018,9 @@ class Harness:
             if preview.isError:
                 raise CheckFailure("read-only mode blocked a dry_run preview")
 
-        await self._with_server({"PROTON_MCP_READ_ONLY": "true"}, checks)
+        await self._with_server({"PROTON_MCP_READ_ONLY": "true"}, checks, port=port)
 
-    async def _safety_no_send(self) -> None:
+    async def _safety_no_send(self, port: int = 8791) -> None:
         async def checks(session: ClientSession) -> None:
             send = await self._session_call(
                 session,
@@ -1023,9 +1036,9 @@ class Harness:
                 session, "delete_folder", {"name": f"Folders/{self.marker}-nosend", "confirm": True}
             )
 
-        await self._with_server({"PROTON_MCP_ALLOW_SEND": "false"}, checks)
+        await self._with_server({"PROTON_MCP_ALLOW_SEND": "false"}, checks, port=port)
 
-    async def _safety_allowed_actions(self) -> None:
+    async def _safety_allowed_actions(self, port: int = 8792) -> None:
         async def checks(session: ClientSession) -> None:
             ok = await self._session_call(session, "list_folders")
             if ok.isError:
@@ -1034,15 +1047,15 @@ class Harness:
             if not write.isError:
                 raise CheckFailure("write category was allowed despite ALLOWED_ACTIONS=read")
 
-        await self._with_server({"PROTON_MCP_ALLOWED_ACTIONS": "read"}, checks)
+        await self._with_server({"PROTON_MCP_ALLOWED_ACTIONS": "read"}, checks, port=port)
 
-    async def _safety_rate_limit(self) -> None:
+    async def _safety_rate_limit(self, port: int = 8793) -> None:
         # Rate limits apply per authenticated subject (docs/HOSTING.md), so an unauthenticated
         # instance ignores PROTON_MCP_RATE_LIMIT_* by design. Spawn an OAuth-enabled instance
         # against the fixture issuer and probe it with a minted token.
         if not (self.args.fixture_url and self.args.mint_secret):
             raise EnvironmentIncomplete("needs --fixture-url and --mint-secret to mint an OAuth token")
-        audience = "http://127.0.0.1:8790/mcp"
+        audience = f"http://127.0.0.1:{port}/mcp"
         token = await self._mint(aud=audience, scope=f"{self.args.oauth_scope_base} mail.read")
 
         async def checks(session: ClientSession) -> None:
@@ -1067,9 +1080,10 @@ class Harness:
             },
             checks,
             token=token,
+            port=port,
         )
 
-    async def _safety_audit(self) -> None:
+    async def _safety_audit(self, port: int = 8794) -> None:
         audit = Path(tempfile.mkdtemp(prefix="pwc-audit-")) / "audit.jsonl"
 
         async def checks(session: ClientSession) -> None:
@@ -1082,7 +1096,7 @@ class Harness:
                 session, "delete_folder", {"name": f"Folders/{self.marker}-audit", "confirm": True}
             )
 
-        await self._with_server({"PROTON_MCP_AUDIT_LOG": str(audit)}, checks)
+        await self._with_server({"PROTON_MCP_AUDIT_LOG": str(audit)}, checks, port=port)
         if not audit.exists():
             raise CheckFailure("audit log file was never created")
         lines = [json.loads(line) for line in audit.read_text().splitlines() if line.strip()]
@@ -1283,7 +1297,16 @@ class Harness:
                     except Exception:
                         pass
 
+        async def marker_anywhere() -> bool:
+            try:
+                found = await self.call("search_all_mail", {"query": self.marker, "limit": 1})
+            except Exception:
+                return True  # cannot prove it's clean, so sweep anyway
+            return bool(found.get("messages"))
+
         for _ in range(3):
+            if not await marker_anywhere():
+                break  # nothing left anywhere; skip the per-folder walk
             await sweep_round()
             await asyncio.sleep(2)
         for folder in (

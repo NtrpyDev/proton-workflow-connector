@@ -56,6 +56,7 @@ class Settings:
     max_attachments: int = 100
     search_all_limit: int = 100
     request_timeout: float = 30.0
+    operation_deadline: float = 90.0
     oauth_issuer_url: str = ""
     oauth_audience: str = ""
     oauth_resource_server_url: str = ""
@@ -137,6 +138,7 @@ def load_settings(env: Mapping[str, str] | None = None) -> Settings:
         max_attachments=_env_int(source, "PROTON_MCP_MAX_ATTACHMENTS", 100),
         search_all_limit=_env_int(source, "PROTON_MCP_SEARCH_ALL_LIMIT", 100),
         request_timeout=float(source.get("PROTON_MCP_REQUEST_TIMEOUT", "30")),
+        operation_deadline=float(source.get("PROTON_MCP_OPERATION_DEADLINE", "90")),
         oauth_issuer_url=source.get("PROTON_MCP_OAUTH_ISSUER_URL", "").rstrip("/"),
         oauth_audience=source.get("PROTON_MCP_OAUTH_AUDIENCE", ""),
         oauth_resource_server_url=source.get("PROTON_MCP_OAUTH_RESOURCE_SERVER_URL", "").rstrip("/"),

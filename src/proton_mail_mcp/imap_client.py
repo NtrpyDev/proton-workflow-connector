@@ -38,7 +38,14 @@ class BridgeMailClient:
     @contextmanager
     def _imap(self) -> Iterator[Any]:
         self.settings.require_bridge()
-        conn = self._open_imap()
+        try:
+            conn = self._open_imap()
+        except (ConnectionError, OSError) as exc:
+            raise RuntimeError(
+                f"Could not connect to Proton Mail Bridge at "
+                f"{self.settings.imap_host}:{self.settings.imap_port} — is Bridge running? "
+                f"({type(exc).__name__}: {exc})"
+            ) from exc
         try:
             conn.login(self.settings.bridge_username, self.settings.bridge_password)
             yield conn
@@ -1236,6 +1243,16 @@ class BridgeMailClient:
         return result
 
     def _open_smtp(self) -> Any:
+        try:
+            return self._open_smtp_inner()
+        except (ConnectionError, OSError) as exc:
+            raise RuntimeError(
+                f"Could not connect to Proton Mail Bridge SMTP at "
+                f"{self.settings.smtp_host}:{self.settings.smtp_port} — is Bridge running? "
+                f"({type(exc).__name__}: {exc})"
+            ) from exc
+
+    def _open_smtp_inner(self) -> Any:
         import smtplib
 
         tls = self.settings.smtp_tls

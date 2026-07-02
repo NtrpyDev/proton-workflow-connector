@@ -52,6 +52,20 @@ def test_audit_log_excludes_message_content_and_tokens(monkeypatch, tmp_path):
     assert "hidden" not in audit_path.read_text()
 
 
+def test_blocked_operations_are_audited_with_the_reason(tmp_path):
+    audit_path = tmp_path / "audit.jsonl"
+    settings = Settings(audit_log=str(audit_path), read_only=True)
+    guard = OperationGuard(settings, enforce_auth=False)
+    client = GuardedClient(FakeClient(), guard, {"write": OperationPolicy("mail.write", "write")})
+
+    with pytest.raises(PermissionError):
+        client.write(message_id="1")
+
+    record = json.loads(audit_path.read_text())
+    assert record["outcome"] == "blocked"
+    assert "read-only" in record["error"]
+
+
 class ModeClient:
     def write(self, **kwargs):
         return {"ok": True}

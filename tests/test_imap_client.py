@@ -833,6 +833,17 @@ def test_parse_helpers_handle_missing_headers():
     assert _parse_authentication(empty)["dmarc"] is None
 
 
+def test_connect_failure_names_bridge_and_endpoint():
+    def refusing_factory(host, port):
+        raise ConnectionRefusedError(111, "Connection refused")
+
+    client = BridgeMailClient(settings(), imap_factory=refusing_factory)
+
+    with pytest.raises(RuntimeError, match=r"is Bridge running\?") as excinfo:
+        client.list_folders()
+    assert "127.0.0.1" in str(excinfo.value)
+
+
 def test_fetch_retries_when_bridge_omits_the_message_literal(monkeypatch):
     # Bridge occasionally answers an OK FETCH with no literal right after another
     # session touches the mailbox; the fetch must retry instead of failing outright.

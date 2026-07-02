@@ -17,7 +17,7 @@ import httpx
 from mcp import ClientSession
 from mcp.client.streamable_http import streamablehttp_client as streamable_http_client
 
-EXPECTED_TOOLS = 67
+EXPECTED_TOOLS = 68
 
 
 def result_json(result) -> Any:

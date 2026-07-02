@@ -2,6 +2,26 @@
 
 All notable changes to this project are recorded here. Versions follow [semantic versioning](https://semver.org/).
 
+## 1.3.0 - 2026-07-02
+
+### Added
+
+- `simplelogin_get_alias_options`: list the custom-alias suffixes SimpleLogin offers,
+  including the `signed_suffix` that `simplelogin_create_custom_alias` requires. Custom
+  aliases were previously impossible to create through the connector alone.
+- A wall-clock deadline on every operation (`PROTON_MCP_OPERATION_DEADLINE`, default 90s).
+  A Bridge session that stops responding mid-command now returns a clear error instead of
+  hanging the tool call indefinitely.
+- Blocked operations (read-only mode, sends disabled, allowed-actions) are written to the
+  audit log with the reason they were refused.
+
+### Changed
+
+- Failing to reach Bridge now reports the address and asks "is Bridge running?" instead of
+  surfacing a raw socket error.
+- The live acceptance suite runs its safety checks concurrently and polls more tightly,
+  cutting a full run from about 12 minutes to about 6.
+
 ## 1.2.1 - 2026-07-01
 
 ### Fixed

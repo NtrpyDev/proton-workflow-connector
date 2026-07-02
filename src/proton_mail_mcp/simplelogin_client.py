@@ -119,6 +119,12 @@ class SimpleLoginClient:
         body = _compact({"note": note})
         return self._request("POST", "/api/alias/random/new", params=params, json_body=body or {})
 
+    def get_alias_options(self, *, hostname: str | None = None) -> dict[str, Any]:
+        """Fetch the suffixes available for a custom alias, including the signed_suffix
+        create_custom_alias requires. Suffix signatures expire after a few minutes, so fetch
+        options immediately before creating."""
+        return self._request("GET", "/api/v5/alias/options", params=_optional_params(hostname=hostname))
+
     def create_custom_alias(
         self,
         *,

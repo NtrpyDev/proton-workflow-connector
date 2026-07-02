@@ -12,7 +12,7 @@ def test_server_registers_complete_tool_surface():
 
     names = asyncio.run(list_names())
 
-    assert len(names) == 67
+    assert len(names) == 68
     assert {
         "download_attachment",
         "reply_mail",
@@ -166,3 +166,51 @@ def test_tool_functions_run_off_the_event_loop():
     for name, tool in server._tool_manager._tools.items():
         assert tool.is_async, f"{name} would run on the event loop"
         assert inspect.iscoroutinefunction(tool.fn), f"{name} is not wrapped as a coroutine"
+
+
+def test_operations_hit_a_wall_clock_deadline(monkeypatch):
+    """A wedged-but-dribbling Bridge session must surface as a clear error, not a silent hang."""
+    import asyncio
+    import time
+
+    from proton_mail_mcp.server import _run_tools_in_worker_threads
+
+    class FakeTool:
+        def fn(self):  # pragma: no cover - replaced below
+            pass
+
+        is_async = False
+
+    def hang():
+        time.sleep(5)
+
+    tool = FakeTool()
+    tool.fn = hang
+
+    class FakeMCP:
+        class _tool_manager:
+            _tools = {"hang": tool}
+
+    _run_tools_in_worker_threads(FakeMCP, deadline=0.2)
+
+    with pytest.raises(RuntimeError, match="Bridge is not responding"):
+        asyncio.run(tool.fn())
+
+
+def test_fast_operations_pass_under_the_deadline():
+    import asyncio
+
+    from proton_mail_mcp.server import _run_tools_in_worker_threads
+
+    class FakeTool:
+        fn = staticmethod(lambda: "ok")
+        is_async = False
+
+    tool = FakeTool()
+
+    class FakeMCP:
+        class _tool_manager:
+            _tools = {"fast": tool}
+
+    _run_tools_in_worker_threads(FakeMCP, deadline=5.0)
+    assert asyncio.run(tool.fn()) == "ok"

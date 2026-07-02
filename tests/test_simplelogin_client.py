@@ -30,6 +30,24 @@ def test_simplelogin_uses_authentication_header_and_params():
     assert json_body is None
 
 
+def test_get_alias_options_request_shape():
+    calls = []
+
+    def requester(method, url, headers, params, json_body):
+        calls.append((method, url, headers, params, json_body))
+        return {"status_code": 200, "json": {"can_create": True, "suffixes": []}}
+
+    client = SimpleLoginClient(settings(), requester=requester)
+
+    client.get_alias_options(hostname="example.com")
+
+    method, url, _headers, params, json_body = calls[0]
+    assert method == "GET"
+    assert url.endswith("/api/v5/alias/options")
+    assert params == {"hostname": "example.com"}
+    assert json_body is None
+
+
 def test_create_custom_alias_request_shape():
     calls = []
 

@@ -707,6 +707,13 @@ def build_server(
         return simplelogin.create_random_alias(hostname=hostname, mode=mode, note=note)
 
     @mcp.tool()
+    def simplelogin_get_alias_options(hostname: str | None = None) -> dict:
+        """List available custom-alias suffixes, including the signed_suffix that
+        simplelogin_create_custom_alias requires. Suffix signatures expire after a few
+        minutes, so call this immediately before creating the alias."""
+        return simplelogin.get_alias_options(hostname=hostname)
+
+    @mcp.tool()
     def simplelogin_create_custom_alias(
         alias_prefix: str,
         signed_suffix: str,
@@ -792,7 +799,7 @@ def build_server(
         }
 
     _apply_tool_annotations(mcp)
-    _run_tools_in_worker_threads(mcp)
+    _run_tools_in_worker_threads(mcp, deadline=settings.operation_deadline)
     return mcp
 
 
@@ -816,6 +823,7 @@ _READ_TOOLS = frozenset(
         "simplelogin_stats",
         "simplelogin_list_aliases",
         "simplelogin_get_alias",
+        "simplelogin_get_alias_options",
         "simplelogin_list_alias_contacts",
         "simplelogin_list_mailboxes",
         "server_status",
@@ -845,6 +853,7 @@ _OPEN_WORLD_TOOLS = frozenset(
         "simplelogin_stats",
         "simplelogin_list_aliases",
         "simplelogin_get_alias",
+        "simplelogin_get_alias_options",
         "simplelogin_create_random_alias",
         "simplelogin_create_custom_alias",
         "simplelogin_update_alias",
@@ -858,13 +867,18 @@ _OPEN_WORLD_TOOLS = frozenset(
 )
 
 
-def _run_tools_in_worker_threads(mcp) -> None:
-    """Re-register every synchronous tool to run in a worker thread.
+def _run_tools_in_worker_threads(mcp, *, deadline: float = 90.0) -> None:
+    """Re-register every synchronous tool to run in a worker thread with a wall-clock deadline.
 
     FastMCP calls synchronous tool functions directly on the event loop, so a single Bridge
     IMAP call that stops responding would freeze the whole server — every session, every
     request — until the process is killed. Running tool bodies in anyio worker threads keeps
     the loop free; a hung call then costs one thread instead of the server.
+
+    Socket timeouts only bound each recv, so a wedged-but-dribbling Bridge session can block
+    far past PROTON_MCP_REQUEST_TIMEOUT. The deadline caps total time per operation: past it
+    the caller gets a clear error instead of a silent hang. The worker thread itself cannot be
+    interrupted mid-syscall; it is abandoned and exits when its socket times out.
     """
     import functools
     import inspect
@@ -883,7 +897,17 @@ def _run_tools_in_worker_threads(mcp) -> None:
         def make_async(sync_fn):
             @functools.wraps(sync_fn)
             async def run_in_thread(*args, **kwargs):
-                return await anyio.to_thread.run_sync(functools.partial(sync_fn, *args, **kwargs))
+                try:
+                    with anyio.fail_after(deadline):
+                        return await anyio.to_thread.run_sync(
+                            functools.partial(sync_fn, *args, **kwargs), abandon_on_cancel=True
+                        )
+                except TimeoutError:
+                    raise RuntimeError(
+                        f"Operation exceeded the {deadline:.0f}s deadline — Proton Mail Bridge is "
+                        "not responding. Retry shortly; if this persists, restart Bridge "
+                        "(PROTON_MCP_OPERATION_DEADLINE adjusts the limit)."
+                    ) from None
 
             return run_in_thread
 
