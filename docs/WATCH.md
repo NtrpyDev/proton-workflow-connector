@@ -275,6 +275,11 @@ The first call baselines and returns no messages; each later call returns only m
 since the previous call for that `cursor_name`. This is the building block for agent-driven
 automations ("check for new invoices, file them, reply") without polling loops in your own code.
 
+Consumers that must survive a crash between fetching and saving work should call `poll_mailbox` with
+`advance=false`. Persist the returned messages together with `cursor_uid`, `uid_validity`,
+`previous_cursor_uid`, and `previous_uid_validity`, then pass that checkpoint to `ack_mailbox`.
+Acknowledgement is idempotent; until it succeeds, another peek returns the same batch.
+
 The `poll_aliases` tool is the SimpleLogin counterpart:
 
 ```

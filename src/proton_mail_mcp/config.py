@@ -9,7 +9,12 @@ def _env_bool(env: Mapping[str, str], name: str, default: bool) -> bool:
     value = env.get(name)
     if value is None:
         return default
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be one of: 1, true, yes, on, 0, false, no, off")
 
 
 def _env_int(env: Mapping[str, str], name: str, default: int) -> int:

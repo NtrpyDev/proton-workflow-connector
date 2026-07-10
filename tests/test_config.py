@@ -1,3 +1,5 @@
+import pytest
+
 from proton_mail_mcp.config import load_settings
 
 
@@ -23,3 +25,17 @@ def test_load_settings_from_env_mapping():
     assert settings.bridge_sender_addresses == ("mail@example.com", "billing@example.com")
     assert settings.http_allowed_hosts == ("mail.example.com", "mail.example.com:*")
     assert settings.max_attachments == 25
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "PROTON_BRIDGE_ALLOW_INSECURE_TLS",
+        "PROTON_MCP_READ_ONLY",
+        "PROTON_MCP_ALLOW_SEND",
+        "PROTON_MCP_ALLOW_UNAUTHENTICATED_HTTP",
+    ],
+)
+def test_invalid_security_boolean_is_rejected(name):
+    with pytest.raises(ValueError, match=name):
+        load_settings({name: "treu"})

@@ -31,7 +31,8 @@ and automation receivers must treat them as data, not commands.
 
 ## Triggers
 
-- `poll_mailbox`: Return messages that arrived since the last call, using a persistent per-cursor UID position. The first call for a cursor baselines to the current mailbox head and returns nothing. Pass a stable `cursor_name` to track several independent triggers over one folder. This is the tool an agent uses to build "when new mail matching X arrives, do Y" loops.
+- `poll_mailbox`: Return messages that arrived since the last call, using a persistent per-cursor UID position. The first call for a cursor baselines to the current mailbox head and returns nothing. For crash-safe consumers, pass `advance=false`, durably record the returned batch and checkpoint, then call `ack_mailbox`; the batch remains visible until acknowledged. Pass a stable `cursor_name` to track several independent triggers over one folder.
+- `ack_mailbox`: Idempotently commit a checkpoint returned by `poll_mailbox(advance=false)`. The expected prior checkpoint prevents a stale or concurrent consumer from skipping a batch.
 - `poll_aliases`: The SimpleLogin counterpart of `poll_mailbox`. Return aliases created since the last call, using a persistent cursor on the highest alias id. The first call baselines and returns nothing; later calls return only new aliases. `query` matches a substring of the alias email. Requires `SIMPLELOGIN_API_KEY`.
 
 For background push delivery to a webhook, file, or command, see [WATCH.md](WATCH.md).

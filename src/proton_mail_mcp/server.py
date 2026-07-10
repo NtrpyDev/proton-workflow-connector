@@ -156,14 +156,10 @@ def build_server(
             limit=limit,
         )
 
-    _watch_cursors: dict[str, CursorStore] = {}
-
     def _cursor_store() -> CursorStore:
-        store = _watch_cursors.get("store")
-        if store is None:
-            store = CursorStore.load(default_state_path(settings))
-            _watch_cursors["store"] = store
-        return store
+        # Reload for every checkpoint operation so a watcher process or another
+        # MCP request cannot leave this server working from stale cursor state.
+        return CursorStore.load(default_state_path(settings))
 
     @mcp.tool()
     def poll_mailbox(
@@ -174,12 +170,15 @@ def build_server(
         subject: str | None = None,
         unread: bool | None = None,
         limit: int = 50,
+        advance: bool = True,
     ) -> dict:
         """Return messages that arrived since the last poll for building triggers and automations.
 
         Uses a persistent per-cursor UID position. The first call for a cursor baselines to the
         current mailbox head and returns no messages, so you only ever receive genuinely new mail.
-        Pass a stable cursor_name to track several independent triggers over the same folder.
+        Pass ``advance=false`` to peek without committing; after durably recording the returned
+        messages, acknowledge its checkpoint with ``ack_mailbox``. Pass a stable cursor_name to
+        track several independent triggers over the same folder.
         """
         name = cursor_name or folder
         store = _cursor_store()
@@ -194,10 +193,64 @@ def build_server(
             unread=unread,
             limit=limit,
         )
-        store.set(name, cursor_uid=result["cursor_uid"], uid_validity=result.get("uid_validity"))
-        store.save()
+        result["previous_cursor_uid"] = last_uid
+        result["previous_uid_validity"] = uid_validity
+        if advance:
+            store.set(name, cursor_uid=result["cursor_uid"], uid_validity=result.get("uid_validity"))
+            store.save()
         result["cursor_name"] = name
+        result["advanced"] = advance
         return result
+
+    @mcp.tool()
+    def ack_mailbox(
+        cursor_name: str,
+        cursor_uid: int,
+        uid_validity: int | None,
+        expected_cursor_uid: int,
+        expected_uid_validity: int | None,
+    ) -> dict:
+        """Idempotently commit a checkpoint returned by ``poll_mailbox(advance=false)``.
+
+        The expected position prevents an acknowledgement from skipping a batch fetched by a
+        concurrent consumer. Repeating an accepted acknowledgement is safe.
+        """
+        def commit_checkpoint() -> dict:
+            if not cursor_name.strip():
+                raise ValueError("cursor_name must be non-empty")
+            if cursor_uid < 0 or expected_cursor_uid < 0:
+                raise ValueError("cursor UIDs must be zero or greater")
+            store = _cursor_store()
+            current_uid, current_validity = store.get(cursor_name)
+            target = (int(cursor_uid), uid_validity)
+            current = (current_uid, current_validity)
+            expected = (int(expected_cursor_uid), expected_uid_validity)
+            if current == target or (current_validity == uid_validity and current_uid >= cursor_uid):
+                return {
+                    "cursor_name": cursor_name,
+                    "cursor_uid": current_uid,
+                    "uid_validity": current_validity,
+                    "acknowledged": True,
+                    "advanced": False,
+                }
+            if current != expected:
+                raise RuntimeError(
+                    f"Cursor {cursor_name!r} changed before acknowledgement; poll again from its current checkpoint"
+                )
+            if uid_validity == expected_uid_validity and cursor_uid < expected_cursor_uid:
+                raise ValueError("cursor acknowledgement cannot move backwards")
+            store.set(cursor_name, cursor_uid=cursor_uid, uid_validity=uid_validity)
+            store.save()
+            return {
+                "cursor_name": cursor_name,
+                "cursor_uid": int(cursor_uid),
+                "uid_validity": uid_validity,
+                "acknowledged": True,
+                "advanced": True,
+            }
+
+        # Cursor acknowledgement belongs to the same mail.read permission boundary as polling.
+        return guard.invoke(MAIL_POLICIES["poll_folder"], "ack_mailbox", commit_checkpoint, (), {})
 
     @mcp.tool()
     def poll_aliases(

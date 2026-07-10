@@ -1,9 +1,36 @@
 import asyncio
+import json
 
 import pytest
 
 from proton_mail_mcp.config import Settings
 from proton_mail_mcp.server import _require_confirmation, _validate_http_security, build_server
+from proton_mail_mcp.watch import CursorStore
+
+
+class PollingMailClient:
+    def __init__(self, cursor_uid: int = 5, uid_validity: int = 7) -> None:
+        self.cursor_uid = cursor_uid
+        self.uid_validity = uid_validity
+
+    def poll_folder(self, **kwargs):
+        last_uid = kwargs["last_uid"]
+        baseline = kwargs["uid_validity"] is None and last_uid == 0
+        messages = [] if baseline else [{"uid": str(self.cursor_uid), "message_id": "<five@example.com>"}]
+        return {
+            "folder": kwargs["folder"],
+            "messages": messages,
+            "cursor_uid": self.cursor_uid,
+            "uid_validity": self.uid_validity,
+            "baseline": baseline,
+            "reset": False,
+            "more": False,
+        }
+
+
+async def _call_json(server, name: str, arguments: dict) -> dict:
+    content = await server.call_tool(name, arguments)
+    return json.loads(content[0].text)
 
 
 def test_server_registers_complete_tool_surface():
@@ -12,7 +39,7 @@ def test_server_registers_complete_tool_surface():
 
     names = asyncio.run(list_names())
 
-    assert len(names) == 68
+    assert len(names) == 69
     assert {
         "download_attachment",
         "reply_mail",
@@ -20,6 +47,7 @@ def test_server_registers_complete_tool_surface():
         "forward_mail",
         "search_all_mail",
         "poll_mailbox",
+        "ack_mailbox",
         "poll_aliases",
         "send_draft",
         "empty_trash",
@@ -32,6 +60,52 @@ def test_server_registers_complete_tool_surface():
         "remove_label",
         "unsubscribe",
     } <= names
+
+
+def test_poll_peek_does_not_advance_until_checkpoint_is_acknowledged(tmp_path):
+    state_path = tmp_path / "watch-state.json"
+    server = build_server(
+        settings=Settings(watch_state_path=str(state_path)),
+        mail_client=PollingMailClient(),
+    )
+
+    peek = asyncio.run(_call_json(server, "poll_mailbox", {"cursor_name": "sorter", "advance": False}))
+
+    assert peek["baseline"] is True
+    assert peek["previous_cursor_uid"] == 0
+    assert CursorStore.load(state_path).get("sorter") == (0, None)
+
+    arguments = {
+        "cursor_name": "sorter",
+        "cursor_uid": peek["cursor_uid"],
+        "uid_validity": peek["uid_validity"],
+        "expected_cursor_uid": peek["previous_cursor_uid"],
+        "expected_uid_validity": peek["previous_uid_validity"],
+    }
+    first = asyncio.run(_call_json(server, "ack_mailbox", arguments))
+    second = asyncio.run(_call_json(server, "ack_mailbox", arguments))
+
+    assert first["advanced"] is True
+    assert second["advanced"] is False
+    assert CursorStore.load(state_path).get("sorter") == (5, 7)
+
+
+def test_poll_peek_replays_batch_until_acknowledged(tmp_path):
+    state_path = tmp_path / "watch-state.json"
+    seed = CursorStore.load(state_path)
+    seed.set("sorter", cursor_uid=4, uid_validity=7)
+    seed.save()
+    server = build_server(
+        settings=Settings(watch_state_path=str(state_path)),
+        mail_client=PollingMailClient(),
+    )
+
+    first = asyncio.run(_call_json(server, "poll_mailbox", {"cursor_name": "sorter", "advance": False}))
+    second = asyncio.run(_call_json(server, "poll_mailbox", {"cursor_name": "sorter", "advance": False}))
+
+    assert first["messages"] == second["messages"]
+    assert first["previous_cursor_uid"] == second["previous_cursor_uid"] == 4
+    assert CursorStore.load(state_path).get("sorter") == (4, 7)
 
 
 def test_destructive_tools_expose_confirmation_field():
