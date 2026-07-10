@@ -30,6 +30,11 @@ chmod 600 ~/.config/proton-workflow-connector/env
 
 Replace the example values with the details from Bridge. Keep this file out of Git.
 
+Plaintext transport and disabled certificate verification are accepted only when both Bridge hosts
+are explicit loopback addresses (`localhost`, a `.localhost` name, `127.0.0.0/8`, or `::1`). If the
+connector reaches Bridge on another machine, configure `starttls` or `ssl` for both protocols and set
+`PROTON_BRIDGE_ALLOW_INSECURE_TLS=false`; construction fails before credentials are sent otherwise.
+
 Set `PROTON_BRIDGE_EMAIL` to the default sender.
 If the account has additional Proton or custom-domain addresses, list every allowed sender in `PROTON_BRIDGE_SENDER_ADDRESSES`, separated by commas.
 

@@ -11,6 +11,8 @@ Do not include real message bodies, credentials, API keys, or mailbox exports in
 ## Running the server safely
 
 - Keep Proton Mail Bridge bound to localhost where possible.
+- Never send Bridge credentials over a remote plaintext or certificate-unverified IMAP/SMTP
+  connection. The connector rejects those combinations for non-loopback Bridge hosts.
 - Prefer local stdio MCP connections.
 - Follow `docs/HOSTING.md` before exposing Streamable HTTP beyond localhost.
 - Use OAuth/OIDC, HTTPS, Host validation, Origin validation, and rate limits for internet deployments.

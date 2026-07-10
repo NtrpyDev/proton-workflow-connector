@@ -25,6 +25,41 @@ def settings(**overrides) -> Settings:
     return Settings(**values)
 
 
+@pytest.mark.parametrize(
+    "overrides, protocol",
+    [
+        ({"imap_host": "bridge.example.com", "imap_tls": "none", "allow_insecure_tls": False}, "IMAP"),
+        ({"smtp_host": "bridge.example.com", "smtp_tls": "none", "allow_insecure_tls": False}, "SMTP"),
+        ({"imap_host": "bridge.example.com", "imap_tls": "starttls", "allow_insecure_tls": True}, "IMAP"),
+        ({"smtp_host": "bridge.example.com", "smtp_tls": "ssl", "allow_insecure_tls": True}, "SMTP"),
+    ],
+)
+def test_client_rejects_insecure_transport_to_non_loopback_bridge(overrides, protocol):
+    with pytest.raises(ValueError, match=protocol):
+        BridgeMailClient(settings(**overrides))
+
+
+def test_client_allows_verified_tls_to_non_loopback_bridge():
+    client = BridgeMailClient(
+        settings(
+            imap_host="bridge.example.com",
+            imap_tls="starttls",
+            smtp_host="bridge.example.com",
+            smtp_tls="ssl",
+            allow_insecure_tls=False,
+        )
+    )
+
+    assert client.settings.imap_host == "bridge.example.com"
+
+
+@pytest.mark.parametrize("host", ["localhost", "bridge.localhost", "127.0.0.2", "::1"])
+def test_client_allows_insecure_transport_only_for_explicit_loopback_hosts(host):
+    client = BridgeMailClient(settings(imap_host=host, smtp_host=host, allow_insecure_tls=True))
+
+    assert client.settings.imap_host == host
+
+
 def message_bytes(subject: str = "Hello") -> bytes:
     return (
         f"From: Alice <alice@example.com>\r\n"

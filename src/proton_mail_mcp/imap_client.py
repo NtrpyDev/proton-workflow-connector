@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import html as html_module
 import imaplib
+import ipaddress
 import re
 import ssl
 import time
@@ -23,6 +24,38 @@ from .redaction import redact_text
 UID_RE = re.compile(r"^\d+$")
 
 
+def _is_loopback_host(host: str) -> bool:
+    normalized = host.strip().removeprefix("[").removesuffix("]").rstrip(".").casefold()
+    if normalized == "localhost" or normalized.endswith(".localhost"):
+        return True
+    try:
+        address = ipaddress.ip_address(normalized)
+    except ValueError:
+        return False
+    if address.version == 6 and address.ipv4_mapped is not None:
+        address = address.ipv4_mapped
+    return address.is_loopback
+
+
+def _validate_bridge_transports(settings: Settings) -> None:
+    allowed_tls = {"none", "starttls", "ssl"}
+    for protocol, host, tls in (
+        ("IMAP", settings.imap_host, settings.imap_tls),
+        ("SMTP", settings.smtp_host, settings.smtp_tls),
+    ):
+        if tls not in allowed_tls:
+            raise ValueError(f"PROTON_BRIDGE_{protocol}_TLS must be one of: none, starttls, ssl")
+        if _is_loopback_host(host):
+            continue
+        if tls == "none":
+            raise ValueError(f"{protocol} plaintext transport is only allowed for a loopback Bridge host")
+        if settings.allow_insecure_tls:
+            raise ValueError(
+                f"{protocol} certificate verification cannot be disabled for a non-loopback Bridge host; "
+                "set PROTON_BRIDGE_ALLOW_INSECURE_TLS=false"
+            )
+
+
 class BridgeMailClient:
     def __init__(
         self,
@@ -31,6 +64,7 @@ class BridgeMailClient:
         imap_factory: Callable[[str, int], Any] | None = None,
         smtp_factory: Callable[..., Any] | None = None,
     ) -> None:
+        _validate_bridge_transports(settings)
         self.settings = settings
         self._imap_factory = imap_factory
         self._smtp_factory = smtp_factory
