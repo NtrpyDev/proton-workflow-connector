@@ -15,14 +15,18 @@ configurable number of cycles so one bad event can never stall a source forever.
 from __future__ import annotations
 
 import argparse
+import copy
+import fcntl
 import hashlib
 import hmac
 import json
 import logging
 import os
 import shlex
+import tempfile
 import time
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -93,19 +97,16 @@ class CursorStore:
 
     path: Path
     _data: dict[str, dict[str, Any]] = field(default_factory=dict)
+    _base_data: dict[str, dict[str, Any]] = field(default_factory=dict, repr=False)
+    _dirty_cursors: set[str] = field(default_factory=set, repr=False)
+    _dirty_failures: set[str] = field(default_factory=set, repr=False)
 
     @classmethod
     def load(cls, path: str | os.PathLike[str]) -> CursorStore:
         resolved = Path(path).expanduser()
-        data: dict[str, dict[str, Any]] = {}
-        if resolved.exists():
-            try:
-                loaded = json.loads(resolved.read_text(encoding="utf-8"))
-                if isinstance(loaded, dict):
-                    data = {str(key): dict(value) for key, value in loaded.items() if isinstance(value, dict)}
-            except (json.JSONDecodeError, OSError):
-                logger.warning("Could not read cursor store at %s; starting fresh", resolved)
-        return cls(path=resolved, _data=data)
+        with _cursor_lock(resolved):
+            data = _read_cursor_data(resolved)
+        return cls(path=resolved, _data=copy.deepcopy(data), _base_data=copy.deepcopy(data))
 
     def get(self, name: str) -> tuple[int, int | None]:
         entry = self._data.get(name, {})
@@ -118,6 +119,7 @@ class CursorStore:
         entry["cursor_uid"] = int(cursor_uid)
         entry["uid_validity"] = uid_validity
         self._data[name] = entry
+        self._dirty_cursors.add(name)
 
     def get_failure(self, name: str) -> tuple[int | None, int]:
         """Return the cursor position of the currently-stuck item and how many cycles it has failed."""
@@ -130,20 +132,101 @@ class CursorStore:
         entry["fail_cursor"] = int(fail_cursor)
         entry["fail_count"] = int(fail_count)
         self._data[name] = entry
+        self._dirty_failures.add(name)
 
     def clear_failure(self, name: str) -> None:
         entry = self._data.get(name)
         if entry is not None:
             entry.pop("fail_cursor", None)
             entry.pop("fail_count", None)
+            self._dirty_failures.add(name)
 
     def save(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(self.path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC, 0o600)
+        with _cursor_lock(self.path, exclusive=True):
+            merged = _read_cursor_data(self.path)
+            for name in self._dirty_cursors | self._dirty_failures:
+                merged[name] = self._merge_entry(name, merged.get(name, {}))
+            _atomic_write_cursor_data(self.path, merged)
+        self._data = copy.deepcopy(merged)
+        self._base_data = copy.deepcopy(merged)
+        self._dirty_cursors.clear()
+        self._dirty_failures.clear()
+
+    def _merge_entry(self, name: str, current: dict[str, Any]) -> dict[str, Any]:
+        """Three-way merge this instance's changed fields into the latest on-disk entry."""
+        merged = dict(current)
+        local = self._data.get(name, {})
+        base = self._base_data.get(name, {})
+        if name in self._dirty_cursors:
+            local_pair = (local.get("cursor_uid", 0), local.get("uid_validity"))
+            base_pair = (base.get("cursor_uid", 0), base.get("uid_validity"))
+            current_pair = (current.get("cursor_uid", 0), current.get("uid_validity"))
+            if current_pair != base_pair and local_pair[1] == current_pair[1]:
+                local_pair = (max(int(local_pair[0] or 0), int(current_pair[0] or 0)), local_pair[1])
+            elif current_pair != base_pair and local_pair == base_pair:
+                local_pair = current_pair
+            merged["cursor_uid"], merged["uid_validity"] = local_pair
+        if name in self._dirty_failures:
+            local_pair = (local.get("fail_cursor"), local.get("fail_count", 0))
+            base_pair = (base.get("fail_cursor"), base.get("fail_count", 0))
+            current_pair = (current.get("fail_cursor"), current.get("fail_count", 0))
+            if current_pair != base_pair and local_pair == base_pair:
+                local_pair = current_pair
+            elif current_pair != base_pair and local_pair[0] is not None and local_pair[0] == current_pair[0]:
+                local_pair = (local_pair[0], max(int(local_pair[1] or 0), int(current_pair[1] or 0)))
+            if local_pair[0] is None:
+                merged.pop("fail_cursor", None)
+                merged.pop("fail_count", None)
+            else:
+                merged["fail_cursor"], merged["fail_count"] = local_pair
+        return merged
+
+
+@contextmanager
+def _cursor_lock(path: Path, *, exclusive: bool = False):
+    """Coordinate cursor readers and writers through a stable sidecar lock file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(path.name + ".lock")
+    descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    os.fchmod(descriptor, 0o600)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def _read_cursor_data(path: Path) -> dict[str, dict[str, Any]]:
+    if not path.exists():
+        return {}
+    try:
+        loaded = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise RuntimeError(f"Cursor store at {path} is corrupt or unreadable; refusing to baseline") from exc
+    if not isinstance(loaded, dict) or any(not isinstance(value, dict) for value in loaded.values()):
+        raise RuntimeError(f"Cursor store at {path} is corrupt; expected a JSON object of cursor entries")
+    return {str(key): dict(value) for key, value in loaded.items()}
+
+
+def _atomic_write_cursor_data(path: Path, data: Mapping[str, Any]) -> None:
+    payload = (json.dumps(data, sort_keys=True) + "\n").encode("utf-8")
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary_path = Path(temporary)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, path)
+        directory = os.open(path.parent, os.O_RDONLY)
         try:
-            os.write(descriptor, (json.dumps(self._data, sort_keys=True) + "\n").encode("utf-8"))
+            os.fsync(directory)
         finally:
-            os.close(descriptor)
+            os.close(directory)
+    finally:
+        temporary_path.unlink(missing_ok=True)
 
 
 def default_state_path(settings: Settings) -> Path:

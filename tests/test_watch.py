@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import multiprocessing
 
 import httpx
 import pytest
@@ -115,6 +116,13 @@ def header_bytes(uid: str) -> bytes:
     ).encode()
 
 
+def save_cursor_in_process(path: str, name: str, cursor_uid: int, barrier) -> None:
+    store = CursorStore.load(path)
+    barrier.wait()
+    store.set(name, cursor_uid=cursor_uid, uid_validity=7)
+    store.save()
+
+
 class FakeIMAP:
     instances: list[FakeIMAP] = []
     uidnext = 20
@@ -223,6 +231,65 @@ def test_cursor_store_roundtrip(tmp_path):
     reopened = CursorStore.load(path)
     assert reopened.get("INBOX") == (42, 7)
     assert reopened.get("missing") == (0, None)
+
+
+def test_cursor_store_rejects_corrupt_state_instead_of_baselining(tmp_path):
+    path = tmp_path / "state.json"
+    path.write_text("{not-json", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="(?i)cursor store.*corrupt"):
+        CursorStore.load(path)
+
+    assert path.read_text(encoding="utf-8") == "{not-json"
+
+
+def test_cursor_store_merges_stale_writers(tmp_path):
+    path = tmp_path / "state.json"
+    first = CursorStore.load(path)
+    second = CursorStore.load(path)
+    first.set("watcher", cursor_uid=42, uid_validity=7)
+    second.set("poll-mailbox", cursor_uid=18, uid_validity=7)
+
+    first.save()
+    second.save()
+
+    reopened = CursorStore.load(path)
+    assert reopened.get("watcher") == (42, 7)
+    assert reopened.get("poll-mailbox") == (18, 7)
+
+
+def test_cursor_store_does_not_regress_a_concurrently_advanced_cursor(tmp_path):
+    path = tmp_path / "state.json"
+    stale = CursorStore.load(path)
+    advanced = CursorStore.load(path)
+    stale.set("shared", cursor_uid=42, uid_validity=7)
+    advanced.set("shared", cursor_uid=45, uid_validity=7)
+
+    advanced.save()
+    stale.save()
+
+    assert CursorStore.load(path).get("shared") == (45, 7)
+
+
+def test_cursor_store_serializes_concurrent_process_writers(tmp_path):
+    path = tmp_path / "state.json"
+    context = multiprocessing.get_context("spawn")
+    barrier = context.Barrier(4)
+    processes = [
+        context.Process(target=save_cursor_in_process, args=(str(path), f"cursor-{index}", index, barrier))
+        for index in range(1, 5)
+    ]
+
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(timeout=10)
+        assert process.exitcode == 0
+
+    reopened = CursorStore.load(path)
+    assert {name: reopened.get(name) for name in (f"cursor-{index}" for index in range(1, 5))} == {
+        f"cursor-{index}": (index, 7) for index in range(1, 5)
+    }
 
 
 def test_poll_rule_returns_events_and_cursor_without_persisting(tmp_path):

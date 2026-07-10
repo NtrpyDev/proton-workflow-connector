@@ -46,6 +46,9 @@ Each trigger tracks a cursor: the last IMAP UID it has seen, plus the folder's `
 
 Push cursors live in a JSON state file (`$XDG_STATE_HOME/proton-workflow-connector/watch-state.json`
 by default, override with `PROTON_MCP_WATCH_STATE`). The `poll_mailbox` tool uses the same file.
+Updates use an interprocess lock and an atomic, durable replace, so the watcher and MCP polling tools
+cannot clobber each other's cursors. If the file is corrupt or unreadable, the connector stops with
+an error instead of treating the mailbox as a first run and potentially skipping mail.
 
 ## Push: run the watcher
 
