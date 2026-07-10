@@ -8,10 +8,12 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import httpx
 import pytest
 
+import proton_mail_mcp.watch as watch_module
 from proton_mail_mcp.config import Settings
 from proton_mail_mcp.imap_client import BridgeMailClient
 from proton_mail_mcp.watch import (
@@ -261,6 +263,24 @@ import proton_mail_mcp.watch
     )
 
     assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("exclusive, expected_mode", [(False, 2), (True, 1)])
+def test_cursor_lock_uses_msvcrt_modes_on_windows(tmp_path, monkeypatch, exclusive, expected_mode):
+    calls = []
+    fake_msvcrt = SimpleNamespace(
+        LK_LOCK=1,
+        LK_RLCK=2,
+        LK_UNLCK=3,
+        locking=lambda descriptor, mode, size: calls.append((mode, size)),
+    )
+    monkeypatch.setitem(sys.modules, "msvcrt", fake_msvcrt)
+    monkeypatch.setattr(watch_module.os, "name", "nt")
+
+    with watch_module._cursor_lock(tmp_path / "state.json", exclusive=exclusive):
+        pass
+
+    assert calls == [(expected_mode, 1), (fake_msvcrt.LK_UNLCK, 1)]
 
 
 def test_cursor_store_rejects_corrupt_state_instead_of_baselining(tmp_path):
