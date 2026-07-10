@@ -21,6 +21,10 @@ class OperationPolicy:
     category: str
 
 
+class OperationBlocked(PermissionError):
+    """An operation refused by a configured local safety mode."""
+
+
 MAIL_POLICIES = {
     "list_folders": OperationPolicy("mail.read", "read"),
     "folder_status": OperationPolicy("mail.read", "read"),
@@ -109,12 +113,12 @@ class OperationGuard:
         if kwargs.get("dry_run"):
             return  # a dry-run mutates nothing, so previews are allowed even in read-only mode
         if self.settings.read_only and policy.category in ("write", "destructive"):
-            raise PermissionError(f"{name!r} is blocked: server is read-only (PROTON_MCP_READ_ONLY)")
+            raise OperationBlocked(f"{name!r} is blocked: server is read-only (PROTON_MCP_READ_ONLY)")
         if not self.settings.allow_send and name in SEND_METHODS:
-            raise PermissionError(f"{name!r} is blocked: sending is disabled (PROTON_MCP_ALLOW_SEND=false)")
+            raise OperationBlocked(f"{name!r} is blocked: sending is disabled (PROTON_MCP_ALLOW_SEND=false)")
         if self.settings.allowed_actions and policy.category not in self.settings.allowed_actions:
             allowed = ", ".join(self.settings.allowed_actions)
-            raise PermissionError(f"{name!r} ({policy.category}) is not in PROTON_MCP_ALLOWED_ACTIONS ({allowed})")
+            raise OperationBlocked(f"{name!r} ({policy.category}) is not in PROTON_MCP_ALLOWED_ACTIONS ({allowed})")
 
     def invoke(self, policy: OperationPolicy, name: str, function, args: tuple[Any, ...], kwargs: dict[str, Any]):
         try:

@@ -30,6 +30,7 @@ from typing import Any
 from .config import Settings, load_settings
 from .imap_client import BridgeMailClient
 from .redaction import redact_text
+from .security import MAIL_POLICIES, GuardedClient, OperationBlocked, OperationGuard
 from .simplelogin_client import SimpleLoginClient
 
 logger = logging.getLogger("proton_workflow_connector.watch")
@@ -699,6 +700,11 @@ def run_watch(
 
     store = store or CursorStore.load(default_state_path(settings))
     sinks = {} if dry_run else {rule.name: _build_rule_sink(settings, rule, sink, command_runner) for rule in rules}
+    action_client = (
+        GuardedClient(client, OperationGuard(settings, enforce_auth=False), MAIL_POLICIES)
+        if client is not None
+        else None
+    )
 
     dead_letter_path = default_dead_letter_path(settings)
     max_attempts = max(settings.watch_dead_letter_max_attempts, 1)
@@ -732,7 +738,7 @@ def run_watch(
                 rule=rule,
                 outcome=outcome,
                 sink=sinks[rule.name],
-                client=client,
+                client=action_client,
                 store=store,
                 dead_letter_path=dead_letter_path,
                 max_attempts=max_attempts,
@@ -802,6 +808,15 @@ def _deliver_rule_events(
         this_cursor = cursors[index]
         try:
             process_event(client, rule, event, sink)
+        except OperationBlocked as exc:
+            store.clear_failure(rule.name)
+            logger.error(
+                "Action blocked by safety policy for rule %r; holding cursor at %s: %s",
+                rule.name,
+                committed,
+                redact_text(str(exc)),
+            )
+            break
         except Exception as exc:
             fail_cursor, fail_count = store.get_failure(rule.name)
             fail_count = fail_count + 1 if fail_cursor == this_cursor else 1

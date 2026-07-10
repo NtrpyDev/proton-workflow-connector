@@ -731,6 +731,81 @@ def test_run_watch_action_only_rule_runs_actions_without_delivery(tmp_path):
     assert store.get("triage") == (42, 7)
 
 
+@pytest.mark.parametrize(
+    "safety_settings, error",
+    [
+        ({"read_only": True}, "read-only"),
+        ({"allowed_actions": ("read",)}, "PROTON_MCP_ALLOWED_ACTIONS"),
+    ],
+)
+def test_run_watch_blocks_write_actions_disallowed_by_safety_modes(tmp_path, caplog, safety_settings, error):
+    client = RecordingClient(messages=[{"uid": "42", "subject": "hi"}])
+    store = CursorStore.load(tmp_path / "state.json")
+    store.set("triage", cursor_uid=41, uid_validity=7)
+    rule = WatchRule(
+        name="triage",
+        source="mail",
+        folder="INBOX",
+        actions=({"type": "mark_read"},),
+    )
+
+    count = run_watch(settings(**safety_settings), rules=[rule], client=client, store=store, once=True)
+
+    assert count == 0
+    assert client.calls == []
+    assert store.get("triage") == (41, 7)
+    assert error in caplog.text
+
+
+def test_run_watch_blocks_forward_when_sending_is_disabled(tmp_path, caplog):
+    client = RecordingClient(messages=[{"uid": "42", "subject": "hi"}])
+    store = CursorStore.load(tmp_path / "state.json")
+    store.set("forward", cursor_uid=41, uid_validity=7)
+    rule = WatchRule(
+        name="forward",
+        source="mail",
+        folder="INBOX",
+        actions=({"type": "forward", "to": "ops@example.com"},),
+    )
+
+    count = run_watch(settings(allow_send=False), rules=[rule], client=client, store=store, once=True)
+
+    assert count == 0
+    assert client.calls == []
+    assert store.get("forward") == (41, 7)
+    assert "sending is disabled" in caplog.text
+
+
+def test_run_watch_never_dead_letters_an_action_blocked_by_policy(tmp_path):
+    client = RecordingClient(messages=[{"uid": "42", "subject": "hi"}])
+    store = CursorStore.load(tmp_path / "state.json")
+    store.set("triage", cursor_uid=41, uid_validity=7)
+    dead_letter = tmp_path / "dead-letter.jsonl"
+    rule = WatchRule(
+        name="triage",
+        source="mail",
+        folder="INBOX",
+        actions=({"type": "mark_read"},),
+    )
+
+    count = run_watch(
+        settings(
+            read_only=True,
+            watch_dead_letter_path=str(dead_letter),
+            watch_dead_letter_max_attempts=1,
+        ),
+        rules=[rule],
+        client=client,
+        store=store,
+        once=True,
+    )
+
+    assert count == 0
+    assert client.calls == []
+    assert store.get("triage") == (41, 7)
+    assert not dead_letter.exists()
+
+
 def test_run_watch_dry_run_does_not_deliver_act_or_advance(tmp_path, caplog):
     caplog.set_level("INFO", logger="proton_workflow_connector.watch")
     client = RecordingClient(messages=[{"uid": "42", "subject": "hi"}])

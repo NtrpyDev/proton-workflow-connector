@@ -128,6 +128,9 @@ A rule can act, notify a sink, or both; a rule with actions and no delivery targ
 Available actions: `mark_read`, `mark_unread`, `star`, `unstar`, `label`, `remove_label`, `archive`,
 `trash`, `move` (needs `folder`), and `forward` (needs `to`, optional `text`). `label`/`remove_label`
 need a `label`. Permanent deletion is intentionally not available as an auto-action.
+Watcher actions honor `PROTON_MCP_READ_ONLY`, `PROTON_MCP_ALLOW_SEND`, and
+`PROTON_MCP_ALLOWED_ACTIONS` just like MCP tool calls. A policy-blocked event keeps its cursor and is
+not dead-lettered, so it remains pending until the safety configuration permits the action.
 
 Use `--dry-run` after editing rules. It polls once and logs the events and actions that would fire,
 but it does not deliver to sinks, run actions, or write cursor state.
