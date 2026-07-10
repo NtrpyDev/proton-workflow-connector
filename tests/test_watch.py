@@ -4,6 +4,10 @@ import hashlib
 import hmac
 import json
 import multiprocessing
+import os
+import subprocess
+import sys
+from pathlib import Path
 
 import httpx
 import pytest
@@ -233,6 +237,32 @@ def test_cursor_store_roundtrip(tmp_path):
     assert reopened.get("missing") == (0, None)
 
 
+def test_watch_module_import_does_not_require_fcntl():
+    code = """
+import builtins
+original_import = builtins.__import__
+def guarded_import(name, *args, **kwargs):
+    if name == 'fcntl':
+        raise ModuleNotFoundError('simulated non-POSIX platform')
+    return original_import(name, *args, **kwargs)
+builtins.__import__ = guarded_import
+import proton_mail_mcp.watch
+"""
+    environment = dict(os.environ)
+    environment["PYTHONPATH"] = "src"
+
+    result = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).parent.parent,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+
+
 def test_cursor_store_rejects_corrupt_state_instead_of_baselining(tmp_path):
     path = tmp_path / "state.json"
     path.write_text("{not-json", encoding="utf-8")
@@ -269,6 +299,22 @@ def test_cursor_store_does_not_regress_a_concurrently_advanced_cursor(tmp_path):
     stale.save()
 
     assert CursorStore.load(path).get("shared") == (45, 7)
+
+
+def test_cursor_store_stale_writer_does_not_restore_old_uidvalidity(tmp_path):
+    path = tmp_path / "state.json"
+    seed = CursorStore.load(path)
+    seed.set("shared", cursor_uid=40, uid_validity=7)
+    seed.save()
+    stale = CursorStore.load(path)
+    resynced = CursorStore.load(path)
+    stale.set("shared", cursor_uid=41, uid_validity=7)
+    resynced.set("shared", cursor_uid=2, uid_validity=8)
+
+    resynced.save()
+    stale.save()
+
+    assert CursorStore.load(path).get("shared") == (2, 8)
 
 
 def test_cursor_store_serializes_concurrent_process_writers(tmp_path):

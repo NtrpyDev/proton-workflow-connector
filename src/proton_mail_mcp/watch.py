@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import argparse
 import copy
-import fcntl
 import hashlib
 import hmac
 import json
@@ -157,20 +156,26 @@ class CursorStore:
         merged = dict(current)
         local = self._data.get(name, {})
         base = self._base_data.get(name, {})
+        base_cursor_pair = (base.get("cursor_uid", 0), base.get("uid_validity"))
+        current_cursor_pair = (current.get("cursor_uid", 0), current.get("uid_validity"))
         if name in self._dirty_cursors:
             local_pair = (local.get("cursor_uid", 0), local.get("uid_validity"))
-            base_pair = (base.get("cursor_uid", 0), base.get("uid_validity"))
-            current_pair = (current.get("cursor_uid", 0), current.get("uid_validity"))
-            if current_pair != base_pair and local_pair[1] == current_pair[1]:
-                local_pair = (max(int(local_pair[0] or 0), int(current_pair[0] or 0)), local_pair[1])
-            elif current_pair != base_pair and local_pair == base_pair:
-                local_pair = current_pair
+            if current_cursor_pair != base_cursor_pair and local_pair[1] == current_cursor_pair[1]:
+                local_pair = (max(int(local_pair[0] or 0), int(current_cursor_pair[0] or 0)), local_pair[1])
+            elif current_cursor_pair[1] != base_cursor_pair[1] and local_pair[1] != current_cursor_pair[1]:
+                local_pair = current_cursor_pair
+            elif current_cursor_pair != base_cursor_pair and local_pair == base_cursor_pair:
+                local_pair = current_cursor_pair
             merged["cursor_uid"], merged["uid_validity"] = local_pair
         if name in self._dirty_failures:
             local_pair = (local.get("fail_cursor"), local.get("fail_count", 0))
             base_pair = (base.get("fail_cursor"), base.get("fail_count", 0))
             current_pair = (current.get("fail_cursor"), current.get("fail_count", 0))
-            if current_pair != base_pair and local_pair == base_pair:
+            stale_generation = (
+                current_cursor_pair[1] != base_cursor_pair[1]
+                and local.get("uid_validity") != current_cursor_pair[1]
+            )
+            if stale_generation or (current_pair != base_pair and local_pair == base_pair):
                 local_pair = current_pair
             elif current_pair != base_pair and local_pair[0] is not None and local_pair[0] == current_pair[0]:
                 local_pair = (local_pair[0], max(int(local_pair[1] or 0), int(current_pair[1] or 0)))
@@ -188,13 +193,42 @@ def _cursor_lock(path: Path, *, exclusive: bool = False):
     path.parent.mkdir(parents=True, exist_ok=True)
     lock_path = path.with_name(path.name + ".lock")
     descriptor = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
-    os.fchmod(descriptor, 0o600)
+    if hasattr(os, "fchmod"):
+        os.fchmod(descriptor, 0o600)
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+        _lock_cursor_file(descriptor, exclusive=exclusive)
         yield
     finally:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        _unlock_cursor_file(descriptor)
         os.close(descriptor)
+
+
+def _lock_cursor_file(descriptor: int, *, exclusive: bool) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        if os.fstat(descriptor).st_size == 0:
+            os.write(descriptor, b"\0")
+            os.fsync(descriptor)
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        mode = msvcrt.LK_LOCK if exclusive else msvcrt.LK_RLCK
+        msvcrt.locking(descriptor, mode, 1)
+        return
+    import fcntl
+
+    fcntl.flock(descriptor, fcntl.LOCK_EX if exclusive else fcntl.LOCK_SH)
+
+
+def _unlock_cursor_file(descriptor: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(descriptor, fcntl.LOCK_UN)
 
 
 def _read_cursor_data(path: Path) -> dict[str, dict[str, Any]]:
@@ -214,17 +248,19 @@ def _atomic_write_cursor_data(path: Path, data: Mapping[str, Any]) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
     temporary_path = Path(temporary)
     try:
-        os.fchmod(descriptor, 0o600)
+        if hasattr(os, "fchmod"):
+            os.fchmod(descriptor, 0o600)
         with os.fdopen(descriptor, "wb", closefd=True) as handle:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(temporary_path, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if os.name != "nt":
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         temporary_path.unlink(missing_ok=True)
 
