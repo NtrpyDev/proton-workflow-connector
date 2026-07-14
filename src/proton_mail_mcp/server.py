@@ -215,6 +215,7 @@ def build_server(
         The expected position prevents an acknowledgement from skipping a batch fetched by a
         concurrent consumer. Repeating an accepted acknowledgement is safe.
         """
+
         def commit_checkpoint() -> dict:
             if not cursor_name.strip():
                 raise ValueError("cursor_name must be non-empty")

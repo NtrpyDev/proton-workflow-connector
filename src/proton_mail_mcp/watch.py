@@ -172,8 +172,7 @@ class CursorStore:
             base_pair = (base.get("fail_cursor"), base.get("fail_count", 0))
             current_pair = (current.get("fail_cursor"), current.get("fail_count", 0))
             stale_generation = (
-                current_cursor_pair[1] != base_cursor_pair[1]
-                and local.get("uid_validity") != current_cursor_pair[1]
+                current_cursor_pair[1] != base_cursor_pair[1] and local.get("uid_validity") != current_cursor_pair[1]
             )
             if stale_generation or (current_pair != base_pair and local_pair == base_pair):
                 local_pair = current_pair
