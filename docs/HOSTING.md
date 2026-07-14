@@ -89,6 +89,21 @@ Change the environment filename if your private file is not `~/.config/proton-wo
 The Bridge unit includes an explicit `flatpak kill` stop action.
 Flatpak runs Bridge in a separate application scope, so `systemctl --user restart protonmail-bridge-headless.service` needs that line to replace the actual Bridge process.
 
+If Proton Mail Bridge is installed as a native package that already provides
+`protonmail-bridge.service`, replace the connector's Flatpak dependency with the
+included drop-in:
+
+```bash
+mkdir -p ~/.config/systemd/user/proton-workflow-connector.service.d
+cp examples/systemd/proton-workflow-connector-native-bridge.conf \
+  ~/.config/systemd/user/proton-workflow-connector.service.d/bridge.conf
+systemctl --user daemon-reload
+systemctl --user enable --now protonmail-bridge.service proton-workflow-connector.service
+```
+
+Do not enable both Bridge units. Confirm the native unit is authenticated and
+fully synchronized before relying on connector automation.
+
 ## Secrets and logs
 
 - Put Bridge credentials and OAuth configuration in a user-only environment file or server secret store.
